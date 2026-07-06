@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ESPHome firmware for a single-plant soil moisture monitor. Target hardware: **Adafruit ItsyBitsy NRF52840**, communicating over **Zigbee** (End Device), integrated with **Home Assistant via Zigbee2MQTT**.
+ESPHome firmware for a 4-plant soil moisture monitor (one board, 4 independent sensors). Target hardware: **Adafruit ItsyBitsy NRF52840**, communicating over **Zigbee** (End Device), integrated with **Home Assistant via Zigbee2MQTT**.
 
-Sensor: capacitive soil moisture v1.2 (analog output), powered via GPIO switch to save battery.
+Sensor: 4x capacitive soil moisture v1.2 (analog output), powered via GPIO switch to save battery (planned, shared switch — not yet wired).
 Power: 18650 Li-ion battery via TP4056 charging module (planned).
 
 ---
@@ -89,14 +89,15 @@ First compile downloads the full nRF Connect SDK (Zephyr v2.6.1) via `west updat
 
 **Compiled firmware output** (inside WSL):
 ```
-~/esphome-projects/hydro-plant/.esphome/build/single-flower-monitor/.pioenvs/single-flower-monitor/
+~/esphome-projects/hydro-plant/.esphome/build/flower-monitor/.pioenvs/flower-monitor/
 ├── firmware.hex / firmware.elf
 └── zephyr/{zephyr.hex, zephyr.bin, zephyr.uf2, merged.hex}
 ```
+(build directory name = `esphome: name:` in the yaml — it was `single-flower-monitor` before the 4-sensor redesign, now `flower-monitor`)
 
 **Copy firmware back to Windows** (for flashing via UF2 drag-and-drop):
 ```powershell
-wsl.exe -d Ubuntu-26.04 -- bash -lc "cp ~/esphome-projects/hydro-plant/.esphome/build/single-flower-monitor/.pioenvs/single-flower-monitor/zephyr/zephyr.uf2 /mnt/c/PlatformIO/Projects/ESP_Home_NRF52840_Hydro_plant/single-flower-monitor.uf2"
+wsl.exe -d Ubuntu-26.04 -- bash -lc "cp ~/esphome-projects/hydro-plant/.esphome/build/flower-monitor/.pioenvs/flower-monitor/zephyr/zephyr.uf2 /mnt/c/PlatformIO/Projects/ESP_Home_NRF52840_Hydro_plant/flower-monitor.uf2"
 ```
 
 See `manual.md` for the full step-by-step workflow.
@@ -131,10 +132,12 @@ esphome logs humidy-zeegbe-plant1.yaml --device COM7
 
 A fresh ESPHome zigbee device shows up in Z2M as `Not supported: generated` and spams `No converter available for '' on '<IEEE>': (undefined)` in the logs on every attribute report. The Dev console's "Generate external definition" button is preview-only — it does **not** fix this until the generated code is saved as a real file and Z2M is restarted.
 
-**Converter source of truth:** `zigbee2mqtt-external-converters/single-flower-monitor.js` in this repo (ESM syntax — `import`/`export default`, matching what Z2M 2.12.1 itself generates). Uses `m.numeric()` from `modernExtend` against `genAnalogInput`/`presentValue`, with `name: 'humidity'` (Z2M/HA special-case this exact name to assign the humidity `device_class` automatically) and `scale: 0.01` (raw ADC ratio 0-1 → percent).
+**Converter source of truth:** `zigbee2mqtt-external-converters/flower-monitor.js` in this repo (ESM syntax — `import`/`export default`, matching what Z2M 2.12.1 itself generates). Uses `m.numeric()` from `modernExtend` against `genAnalogInput`/`presentValue`, with `name: 'humidity'` (Z2M/HA special-case this exact name to assign the humidity `device_class` automatically) and `scale: 0.01` (raw ADC ratio 0-1 → percent).
+
+**Multi-endpoint (4 sensors, since the redesign):** each sensor is a separate Zigbee endpoint (1-4), same cluster/attribute on each. Handled via the device-level `endpoint: (device) => ({flower_1: 1, flower_2: 2, flower_3: 3, flower_4: 4})` mapping plus `endpointNames` on the `numeric()` call — standard zigbee-herdsman-converters pattern for multi-gang devices. Resulting exposed properties are suffixed per endpoint (e.g. `humidity_flower_1`). **Not yet verified against a real re-pairing** — after flashing the 4-sensor firmware, re-run "Generate external definition" in Dev console once the device re-joins, and cross-check endpoint numbers actually match declaration order in the yaml (assumed sequential 1-4 by sensor order, unconfirmed).
 
 **Deployment (user accesses HA via File Editor / Studio Code Server add-on):**
-1. Copy the file into the Z2M add-on's `external_converters/` folder (visible as `zigbee2mqtt/` next to `configuration.yaml`, or under `/addon_configs/<slug>_zigbee2mqtt/` via Studio Code Server with full filesystem access).
+1. Copy the file into the Z2M add-on's `external_converters/` folder (visible as `zigbee2mqtt/` next to `configuration.yaml`, or under `/addon_configs/<slug>_zigbee2mqtt/` via Studio Code Server with full filesystem access). Delete the old `single-flower-monitor.js` there too if present.
 2. Restart the Zigbee2MQTT add-on.
 3. If Z2M throws `SyntaxError: Cannot use import statement outside a module`, this Z2M version expects `.mjs` instead of `.js` — rename the file.
 
@@ -166,12 +169,19 @@ ESPHome warns: *"Single endpoint requires ZHA or at least Zigbee2MQTT 2.8.0"*. T
 
 ## Pin Map (Adafruit ItsyBitsy NRF52840)
 
+Analog-capable pins on this board (Arduino alias → GPIO → SAADC channel), from the official variant files: A4=P0.02=AIN0, A5=P0.03=AIN1, A0=P0.04=AIN2, A6/D10=P0.05=AIN3, A2=P0.28=AIN4, A1=P0.30=AIN6, A3=P0.31=AIN7. Max 8 Zigbee endpoints on nrf52 (`CONF_MAX_EP_NUMBER = 8`).
+
 | ESPHome ID | Physical pin | Role |
 |---|---|---|
 | `power_pin_pull` | `P0.13` | Bus power pull (clone board fix) |
-| `sensor_vcc_power` | `P0.08` | Sensor VCC enable switch |
-| `flower_1` (ADC) | `P0.02` (AIN0) | Capacitive moisture sensor output |
-| battery monitor | TBD free AIN | Voltage divider for battery % (not yet wired) |
+| `sensor_vcc_power` | `P0.08` | Sensor VCC enable switch (planned, shared across all 4 sensors — not yet wired) |
+| `flower_1` (ADC) | `P0.02` (AIN0 / A4) | Soil moisture sensor 1 |
+| `flower_2` (ADC) | `P0.03` (AIN1 / A5) | Soil moisture sensor 2 |
+| `flower_3` (ADC) | `P0.04` (AIN2 / A0) | Soil moisture sensor 3 |
+| `flower_4` (ADC) | `P0.05` (AIN3 / A6/D10) | Soil moisture sensor 4 |
+| battery monitor | `P0.28` (AIN4 / A2) reserved | Voltage divider for battery % (not yet wired) |
+
+Free/spare after the above: `P0.30` (AIN6/A1), `P0.31` (AIN7/A3).
 
 **`dcdc: false`** — must stay off; ItsyBitsy NRF52840 has no external inductor for the DC/DC converter. Without this flag the board may not start reliably.
 
@@ -179,12 +189,12 @@ ESPHome warns: *"Single endpoint requires ZHA or at least Zigbee2MQTT 2.8.0"*. T
 
 ---
 
-## Current Working Config (connectivity test, no physical sensor needed)
+## Current Working Config (4 sensors, confirmed compiling 2026-07-06)
 
 ```yaml
 esphome:
-  name: "single-flower-monitor"
-  friendly_name: "Monitor_flower1"
+  name: "flower-monitor"
+  friendly_name: "Flower Monitor"
 
 logger:
   level: DEBUG
@@ -196,12 +206,31 @@ nrf52:
 
 zigbee:
   sleepy: false
+  wipe_on_boot: once
 
 sensor:
   - platform: adc
     pin: P0.02
-    name: "Влажность_почвы"
+    name: "Влажность_почвы_1"
     icon: "mdi:water-percent"
     update_interval: 60s
     id: flower_1
+  - platform: adc
+    pin: P0.03
+    name: "Влажность_почвы_2"
+    icon: "mdi:water-percent"
+    update_interval: 60s
+    id: flower_2
+  - platform: adc
+    pin: P0.04
+    name: "Влажность_почвы_3"
+    icon: "mdi:water-percent"
+    update_interval: 60s
+    id: flower_3
+  - platform: adc
+    pin: P0.05
+    name: "Влажность_почвы_4"
+    icon: "mdi:water-percent"
+    update_interval: 60s
+    id: flower_4
 ```

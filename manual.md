@@ -44,10 +44,10 @@ wsl.exe -d Ubuntu-26.04 -- bash -lc "source ~/esphome-venv/bin/activate && cd ~/
 ## 4. Скопировать готовую прошивку обратно в Windows
 
 ```powershell
-wsl.exe -d Ubuntu-26.04 -- bash -lc "cp ~/esphome-projects/hydro-plant/.esphome/build/single-flower-monitor/.pioenvs/single-flower-monitor/zephyr/zephyr.uf2 /mnt/c/PlatformIO/Projects/ESP_Home_NRF52840_Hydro_plant/single-flower-monitor.uf2"
+wsl.exe -d Ubuntu-26.04 -- bash -lc "cp ~/esphome-projects/hydro-plant/.esphome/build/flower-monitor/.pioenvs/flower-monitor/zephyr/zephyr.uf2 /mnt/c/PlatformIO/Projects/ESP_Home_NRF52840_Hydro_plant/flower-monitor.uf2"
 ```
 
-Файл `single-flower-monitor.uf2` появится в корне проекта в Windows.
+Файл `flower-monitor.uf2` появится в корне проекта в Windows.
 
 > Если имя устройства в `esphome:` -> `name:` в yaml изменится, путь `.../build/<имя>/...` тоже изменится — подставь новое имя.
 
@@ -55,7 +55,7 @@ wsl.exe -d Ubuntu-26.04 -- bash -lc "cp ~/esphome-projects/hydro-plant/.esphome/
 
 1. Подключи ItsyBitsy NRF52840 к компьютеру по USB.
 2. Дважды быстро нажми кнопку **Reset** на плате — она должна перезагрузиться в режим UF2-bootloader и появиться в Windows как съёмный диск (обычно называется `ITSYBOOT` или похоже).
-3. Перетащи (или скопируй) `single-flower-monitor.uf2` на этот диск.
+3. Перетащи (или скопируй) `flower-monitor.uf2` на этот диск.
 4. Плата автоматически прошьётся и перезапустится в обычном режиме — диск исчезнет.
 
 Если диск не появляется — проверь USB-кабель (должен быть с поддержкой данных, не только питания) и попробуй ещё раз двойной Reset — таймаут окна для двойного клика короткий (~0.5 сек).
@@ -64,6 +64,8 @@ wsl.exe -d Ubuntu-26.04 -- bash -lc "cp ~/esphome-projects/hydro-plant/.esphome/
 
 - Открой логи платы (см. ниже) или интерфейс Z2M → включи режим "Permit join" → плата должна появиться в списке устройств Z2M.
 - Убедись, что Z2M версии ≥ 2.8.0 (см. предупреждение при компиляции про single endpoint).
+
+> Если менял `esphome: name:` (например, при переходе с 1 датчика на 4 — с `single-flower-monitor` на `flower-monitor`) — это меняет Zigbee Model ID, который видит Z2M. Старую запись устройства в Z2M (со старым именем) удали вручную. Также учти: `wipe_on_boot: once` генерирует новое случайное "magic"-число при **каждой** компиляции — значит эта новая прошивка автоматически сотрёт Zigbee-состояние и попытается присоединиться заново на первой же загрузке, даже если ты не трогал `wipe_on_boot` в конфиге. Держи "Permit join (All)" включённым в момент первого включения платы с новой прошивкой.
 
 ## 7. Смотреть логи через USB (подтверждено рабочим)
 
@@ -90,23 +92,25 @@ esphome logs humidy-zeegbe-plant1.yaml --device COM7
 
 По умолчанию Z2M видит устройство как `Not supported: generated` и сыпет в лог `No converter available for '' on '<IEEE>': (undefined)` при каждом отчёте с платы. Кнопка "Generate external definition" в Dev console — это только предпросмотр, реально ошибку убирает только сохранённый файл конвертера + рестарт Z2M.
 
-**Готовый конвертер лежит в репозитории:** `zigbee2mqtt-external-converters/single-flower-monitor.js`. Использует кластер `genAnalogInput` / атрибут `presentValue`, `name: 'humidity'` (важно — именно по этому имени Z2M/HA автоматически определяют `device_class` и показывают объект как измеритель влажности), `scale: 0.01` (пересчёт сырой доли 0-1 в проценты).
+**Готовый конвертер лежит в репозитории:** `zigbee2mqtt-external-converters/flower-monitor.js` (для версии с 1 датчиком назывался `single-flower-monitor.js` — удали старый файл на стороне Z2M, если он там остался). Использует кластер `genAnalogInput` / атрибут `presentValue`, `name: 'humidity'` (важно — именно по этому имени Z2M/HA автоматически определяют `device_class` и показывают объект как измеритель влажности), `scale: 0.01` (пересчёт сырой доли 0-1 в проценты).
+
+**С 4 датчиками (с версии на 4 растения):** каждый датчик — отдельный Zigbee-эндпоинт (1-4), один и тот же кластер на каждом. В конвертере это задаётся через `endpoint: (device) => ({flower_1: 1, flower_2: 2, flower_3: 3, flower_4: 4})` + `endpointNames` в `numeric()` — стандартный приём zigbee-herdsman-converters для устройств с несколькими одинаковыми датчиками на разных эндпоинтах. Итоговые сущности получат суффиксы (`humidity_flower_1` ... `humidity_flower_4`). **Не проверено на реальном пейринге** — после прошивки и повторного подключения имеет смысл заново нажать "Generate external definition" в Dev console и сверить, что номера эндпоинтов правда идут 1-4 в том же порядке, что и датчики в yaml.
 
 **Как применить через File Editor / Studio Code Server (мой обычный способ доступа к HA):**
 
 1. Открой File Editor (или Studio Code Server) add-on в Home Assistant.
 2. Найди папку конфигурации Zigbee2MQTT — обычно видна в дереве файлов как `zigbee2mqtt/` (рядом с `configuration.yaml`), либо через Studio Code Server с полным доступом к файловой системе — в `/addon_configs/<slug>_zigbee2mqtt/`.
 3. Внутри неё создай (если ещё нет) папку **`external_converters`**.
-4. Создай файл **`single-flower-monitor.js`** и вставь содержимое из `zigbee2mqtt-external-converters/single-flower-monitor.js` в этом репозитории.
+4. Создай файл **`flower-monitor.js`** и вставь содержимое из `zigbee2mqtt-external-converters/flower-monitor.js` в этом репозитории. Удали старый `single-flower-monitor.js`, если он там есть.
 5. **Settings → Add-ons → Zigbee2MQTT → Restart.**
 6. Проверь:
-   - В **Exposes** должна появиться сущность `Soil moisture` в %.
-   - В Home Assistant объект должен определиться как сенсор влажности (иконка капли, `%`).
+   - В **Exposes** должны появиться 4 сущности `Soil moisture` (по одной на эндпоинт) в %.
+   - В Home Assistant объекты должны определиться как сенсоры влажности (иконка капли, `%`).
    - В **Logs** ошибки `No converter available` должны исчезнуть.
 
 Если при рестарте Z2M выдаст `SyntaxError: Cannot use import statement outside a module` — эта версия Z2M ждёт ESM-файлы с расширением `.mjs`, а не `.js`; переименуй файл.
 
-> При изменении конфига датчика (например, добавление battery/switch эндпоинтов) конвертер, скорее всего, тоже придётся обновить — новые эндпоинты/кластеры не появятся в нём автоматически.
+> При изменении конфига датчиков (например, добавление battery/switch эндпоинтов) конвертер, скорее всего, тоже придётся обновить — новые эндпоинты/кластеры не появятся в нём автоматически.
 
 ---
 
@@ -125,8 +129,10 @@ esphome logs humidy-zeegbe-plant1.yaml --device COM7
 ## Следующие шаги проекта (roadmap)
 
 1. ✅ Плата собирается и компилируется через WSL2
-2. ✅ Пейринг с Z2M подтверждён (Z2M обновлён до 2.12.1, устройство видно как `single-flower-monitor`)
-3. ✅ Данные с датчика доходят до Z2M и корректно отображаются в HA как "Soil moisture" в % (внешний конвертер применён, см. шаг 8)
-4. ⬜ Добавить управление питанием датчика (GPIO switch, `sensor_vcc_power` на `P0.08`) на каждый цикл измерения
-5. ⬜ Добавить мониторинг батареи (voltage divider на свободный AIN)
-6. ⬜ Включить `deep_sleep` (например, 60 минут) — только после того как Zigbee-пейринг подтверждён и `sleepy: true` включён и тоже подтверждён рабочим
+2. ✅ Пейринг с Z2M подтверждён (Z2M обновлён до 2.12.1)
+3. ✅ Данные с датчика доходят до Z2M и корректно отображаются в HA как "Soil moisture" в % (внешний конвертер применён, см. шаг 8) — на версии с 1 датчиком (`single-flower-monitor`)
+4. ✅ Конфиг переделан на 4 датчика (`flower-monitor`, P0.02/P0.03/P0.04/P0.05), компилируется успешно
+5. ⬜ Прошить плату новой версией, подтвердить пейринг с 4 эндпоинтами и обновлённый конвертер (`flower-monitor.js`) в Z2M
+6. ⬜ Добавить управление питанием датчиков (общий GPIO switch, `sensor_vcc_power` на `P0.08`) на каждый цикл измерения
+7. ⬜ Добавить мониторинг батареи (voltage divider на `P0.28`)
+8. ⬜ Включить `deep_sleep` (например, 60 минут) — только после того как Zigbee-пейринг подтверждён и `sleepy: true` включён и тоже подтверждён рабочим

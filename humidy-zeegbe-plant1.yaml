@@ -1,0 +1,22 @@
+esphome:
+  name: "single-flower-monitor"
+  friendly_name: "Monitor_flower1"
+
+logger:
+  level: DEBUG
+
+nrf52:
+  board: adafruit_itsybitsy_nrf52840
+  dcdc: false
+  dfu: true
+
+zigbee:
+  sleepy: false
+
+sensor:
+  - platform: adc
+    pin: P0.02
+    name: "Влажность_почвы"
+    icon: "mdi:water-percent"
+    update_interval: 60s
+    id: flower_1

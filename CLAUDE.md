@@ -103,6 +103,47 @@ See `manual.md` for the full step-by-step workflow.
 
 ---
 
+## Reading Logs via USB (COM port, confirmed working 2026-07-06)
+
+Log streaming does **not** need the Zephyr/west toolchain — it's just a serial monitor, so it works fine with the existing **Windows** ESPHome install (2026.6.3), no WSL needed.
+
+**1. Find the board's COM port:**
+```powershell
+Get-PnpDevice -Class Ports -PresentOnly | Select-Object Status, Class, FriendlyName, InstanceId | Format-List
+```
+Look for a `USB\VID_2FE3&PID_0100...` entry (`Устройство с последовательным интерфейсом USB`) — VID `2FE3`/PID `0100` is the default Zephyr Project USB CDC ACM sample VID/PID, which this firmware uses. Note the `COMx` name shown in `FriendlyName`.
+
+**2. Stream logs:**
+```powershell
+$env:PYTHONUTF8 = "1"
+esphome logs humidy-zeegbe-plant1.yaml --device COM7
+```
+(replace `COM7` with whatever port was found in step 1). `PYTHONUTF8` is needed for the same Cyrillic-path reason as Problem 1 above.
+
+**Notes:**
+- Logger's default `hardware_uart` on nrf52 is `USB_CDC` — logging over USB works out of the box, no extra config needed.
+- If you attach the monitor *after* the board already booted, you miss the earliest boot messages (no ring buffer for late-attaching serial listeners) — power-cycle/reset the board while the monitor is already running to capture full boot logs, including Zigbee join/steering signals (`ZB_BDB_SIGNAL_DEVICE_FIRST_START`, `ZB_BDB_SIGNAL_STEERING`).
+- On board reset/USB re-enumeration the terminal prints `ERROR Serial port closed!` and exits — this is expected, just restart the log command.
+
+---
+
+## Zigbee2MQTT External Converter (confirmed working 2026-07-06)
+
+A fresh ESPHome zigbee device shows up in Z2M as `Not supported: generated` and spams `No converter available for '' on '<IEEE>': (undefined)` in the logs on every attribute report. The Dev console's "Generate external definition" button is preview-only — it does **not** fix this until the generated code is saved as a real file and Z2M is restarted.
+
+**Converter source of truth:** `zigbee2mqtt-external-converters/single-flower-monitor.js` in this repo (ESM syntax — `import`/`export default`, matching what Z2M 2.12.1 itself generates). Uses `m.numeric()` from `modernExtend` against `genAnalogInput`/`presentValue`, with `name: 'humidity'` (Z2M/HA special-case this exact name to assign the humidity `device_class` automatically) and `scale: 0.01` (raw ADC ratio 0-1 → percent).
+
+**Deployment (user accesses HA via File Editor / Studio Code Server add-on):**
+1. Copy the file into the Z2M add-on's `external_converters/` folder (visible as `zigbee2mqtt/` next to `configuration.yaml`, or under `/addon_configs/<slug>_zigbee2mqtt/` via Studio Code Server with full filesystem access).
+2. Restart the Zigbee2MQTT add-on.
+3. If Z2M throws `SyntaxError: Cannot use import statement outside a module`, this Z2M version expects `.mjs` instead of `.js` — rename the file.
+
+**Gotcha:** if the device config gains more endpoints (e.g. battery sensor, switch), the converter needs matching updates — new clusters won't auto-appear in it.
+
+See `manual.md` step 8 for the full walkthrough.
+
+---
+
 ## Zigbee Configuration Notes
 
 ### ESPHome validation rule

@@ -65,14 +65,48 @@ wsl.exe -d Ubuntu-26.04 -- bash -lc "cp ~/esphome-projects/hydro-plant/.esphome/
 - Открой логи платы (см. ниже) или интерфейс Z2M → включи режим "Permit join" → плата должна появиться в списке устройств Z2M.
 - Убедись, что Z2M версии ≥ 2.8.0 (см. предупреждение при компиляции про single endpoint).
 
-## 7. Смотреть логи (опционально, для отладки)
+## 7. Смотреть логи через USB (подтверждено рабочим)
 
-Через USB (пока не включён `sleepy: true` / deep_sleep):
-```bash
-# из WSL, с активированным venv
-esphome logs humidy-zeegbe-plant1.yaml
+Логи — это просто чтение serial-порта, компилятор/WSL для этого не нужен. Работает прямо из Windows через уже установленный там ESPHome (2026.6.3), без usbipd и без WSL.
+
+**Шаг 1 — найти COM-порт платы:**
+```powershell
+Get-PnpDevice -Class Ports -PresentOnly | Select-Object Status, Class, FriendlyName, InstanceId | Format-List
 ```
-(Может потребоваться проброс USB-устройства в WSL через usbipd-win — иначе логи проще смотреть штатным способом из Windows-инструмента ESPHome, если он установлен, либо через serial-monitor.)
+Ищи устройство `USB\VID_2FE3&PID_0100...` ("Устройство с последовательным интерфейсом USB") — это стандартный VID/PID проекта Zephyr для USB CDC ACM, который использует эта прошивка. В `FriendlyName` увидишь номер порта, например `COM7`.
+
+**Шаг 2 — запустить лог:**
+```powershell
+$env:PYTHONUTF8 = "1"
+esphome logs humidy-zeegbe-plant1.yaml --device COM7
+```
+(подставь свой номер COM-порта).
+
+**Важные нюансы:**
+- Если подключиться к логам уже ПОСЛЕ загрузки платы — самые ранние сообщения загрузки (включая сигналы Zigbee-подключения `ZB_BDB_SIGNAL_DEVICE_FIRST_START`, `ZB_BDB_SIGNAL_STEERING`) будут упущены — нет буфера для "опоздавших" слушателей. Чтобы поймать полный лог загрузки, сначала запусти команду логов, а потом перезагрузи плату (обычный Reset, не двойной клик в bootloader).
+- При перезагрузке/переподключении USB лог обрывается с `ERROR Serial port closed!` — это нормально, просто перезапусти команду.
+
+## 8. Внешний конвертер для Z2M (чтобы устройство не было "Not supported" и влажность отображалась в %)
+
+По умолчанию Z2M видит устройство как `Not supported: generated` и сыпет в лог `No converter available for '' on '<IEEE>': (undefined)` при каждом отчёте с платы. Кнопка "Generate external definition" в Dev console — это только предпросмотр, реально ошибку убирает только сохранённый файл конвертера + рестарт Z2M.
+
+**Готовый конвертер лежит в репозитории:** `zigbee2mqtt-external-converters/single-flower-monitor.js`. Использует кластер `genAnalogInput` / атрибут `presentValue`, `name: 'humidity'` (важно — именно по этому имени Z2M/HA автоматически определяют `device_class` и показывают объект как измеритель влажности), `scale: 0.01` (пересчёт сырой доли 0-1 в проценты).
+
+**Как применить через File Editor / Studio Code Server (мой обычный способ доступа к HA):**
+
+1. Открой File Editor (или Studio Code Server) add-on в Home Assistant.
+2. Найди папку конфигурации Zigbee2MQTT — обычно видна в дереве файлов как `zigbee2mqtt/` (рядом с `configuration.yaml`), либо через Studio Code Server с полным доступом к файловой системе — в `/addon_configs/<slug>_zigbee2mqtt/`.
+3. Внутри неё создай (если ещё нет) папку **`external_converters`**.
+4. Создай файл **`single-flower-monitor.js`** и вставь содержимое из `zigbee2mqtt-external-converters/single-flower-monitor.js` в этом репозитории.
+5. **Settings → Add-ons → Zigbee2MQTT → Restart.**
+6. Проверь:
+   - В **Exposes** должна появиться сущность `Soil moisture` в %.
+   - В Home Assistant объект должен определиться как сенсор влажности (иконка капли, `%`).
+   - В **Logs** ошибки `No converter available` должны исчезнуть.
+
+Если при рестарте Z2M выдаст `SyntaxError: Cannot use import statement outside a module` — эта версия Z2M ждёт ESM-файлы с расширением `.mjs`, а не `.js`; переименуй файл.
+
+> При изменении конфига датчика (например, добавление battery/switch эндпоинтов) конвертер, скорее всего, тоже придётся обновить — новые эндпоинты/кластеры не появятся в нём автоматически.
 
 ---
 
@@ -91,7 +125,8 @@ esphome logs humidy-zeegbe-plant1.yaml
 ## Следующие шаги проекта (roadmap)
 
 1. ✅ Плата собирается и компилируется через WSL2
-2. ⬜ Подтвердить пейринг с Z2M (без физического датчика)
-3. ⬜ Добавить управление питанием датчика (GPIO switch, `sensor_vcc_power` на `P0.08`) на каждый цикл измерения
-4. ⬜ Добавить мониторинг батареи (voltage divider на свободный AIN)
-5. ⬜ Включить `deep_sleep` (например, 60 минут) — только после того как Zigbee-пейринг подтверждён и `sleepy: true` включён и тоже подтверждён рабочим
+2. ✅ Пейринг с Z2M подтверждён (Z2M обновлён до 2.12.1, устройство видно как `single-flower-monitor`)
+3. ✅ Данные с датчика доходят до Z2M (Exposes → "Analog Input _ on endpoint 1", значение 0-1, не проценты и не вольты — калибровка/пересчёт ещё впереди)
+4. ⬜ Добавить управление питанием датчика (GPIO switch, `sensor_vcc_power` на `P0.08`) на каждый цикл измерения
+5. ⬜ Добавить мониторинг батареи (voltage divider на свободный AIN)
+6. ⬜ Включить `deep_sleep` (например, 60 минут) — только после того как Zigbee-пейринг подтверждён и `sleepy: true` включён и тоже подтверждён рабочим

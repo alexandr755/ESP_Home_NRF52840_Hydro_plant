@@ -12,6 +12,7 @@ nrf52:
 
 zigbee:
   sleepy: false
+  wipe_on_boot: once
 
 sensor:
   - platform: adc

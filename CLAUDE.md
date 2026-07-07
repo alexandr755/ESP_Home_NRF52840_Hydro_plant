@@ -145,6 +145,47 @@ A fresh ESPHome zigbee device shows up in Z2M as `Not supported: generated` and 
 
 See `manual.md` step 8 for the full walkthrough.
 
+**Status update (2026-07-07):** the board doesn't reliably reach this coordinator from the far room. See "ZHA Second Coordinator" below — the board currently runs on a *different* network (ZHA via a second coordinator), not this Z2M one. This Z2M converter section is kept for reference / in case the board moves back to the primary network (e.g. once a Zigbee router is added per `plain.md`).
+
+---
+
+## ZHA Second Coordinator (Bridge Pro) + Custom Quirk (confirmed working 2026-07-07)
+
+**Background:** the board couldn't reach the primary Z2M coordinator from the far room (see `plain.md` for the range-extension plan — router options via CC2531/CC-Debugger or Bridge Pro). Instead of/in addition to a router, the user stood up a **second, independent Zigbee network**: SONOFF Zigbee Bridge Pro flashed with Tasmota + Zigbee coordinator firmware, added to Home Assistant as a native **ZHA** integration ("Generic Zigbee Coordinator (EZSP)"). This is a second network, not a mesh extension of the first — see `plain.md` Вариант В for the tradeoffs (WiFi-based serial-to-IP bridges are officially discouraged by Z2M docs; same caveat applies conceptually here).
+
+**The board is now paired to this second (ZHA) network, not the original Z2M one.**
+
+### Rejoining a different network
+The board remembers whichever network it last joined (stored in flash). To make it forget and rejoin a *different* network:
+1. Recompile the firmware (no yaml changes needed — `wipe_on_boot: once` generates a fresh random magic number on every `esphome compile` invocation, which forces a wipe+rejoin on next boot, see Problem in "Zigbee Configuration Notes" below).
+2. Reflash via UF2.
+3. **Disable Permit Join on the network you don't want it to join, enable it only on the target network** — if both networks have Permit Join open simultaneously, which one the board joins is not guaranteed.
+4. Power on — board wipes its Zigbee state and joins whichever network has Permit Join active.
+
+### Custom ZHA quirk (equivalent of the Z2M external converter, different ecosystem)
+A fresh device on ZHA shows generic sensor entities named `__1`..`__4` (raw ADC ratio, unit "V", wrong) instead of proper humidity/percent sensors — ZHA's default fallback for an unrecognized `genAnalogInput`/`AnalogInput` cluster, same underlying problem as Z2M's `Not supported: generated`. ZHA's equivalent of an "external converter" is a Python **quirk**, using the modern `QuirkBuilder` fluent API (`zigpy.quirks.v2`).
+
+**Quirk source of truth:** `zha-quirks/esphome_flower_monitor.py` in this repo. Matches by `QuirkBuilder("esphome", "flower-monitor")` (manufacturer/model exactly as read from the live device's Basic cluster — visible in HA's device card). Defines 4 `.sensor()` calls, one per endpoint (1-4), each:
+- `"present_value"` attribute (snake_case zigpy convention for ZCL `presentValue`) on `AnalogInput.cluster_id` (0x000C = `genAnalogInput`)
+- `multiplier=100, divisor=1` — raw 0-1 ratio → percent (matches the `scale: 0.01` used in the Z2M converter, same math, different parameter name/direction)
+- `device_class=SensorDeviceClass.HUMIDITY`, `unit="%"`, `state_class=SensorStateClass.MEASUREMENT`
+- `suggested_display_precision=0` — rounds the HA frontend display to whole percent (doesn't touch the stored/logged value)
+
+**Deployment:**
+1. Create `/config/zha_quirks/` (from **Home Assistant Core's own internal path perspective** — this is `/config` regardless of what a file-management tool's UI shows as the absolute path, e.g. an SSH/Terminal add-on may display the same folder as `/homeassistant/...`; what matters is it's the same folder that already contains `configuration.yaml`).
+2. Copy `esphome_flower_monitor.py` into it.
+3. In `configuration.yaml`:
+   ```yaml
+   zha:
+     enable_quirks: true
+     custom_quirks_path: /config/zha_quirks/
+   ```
+4. **Full HA restart** (not just YAML reload) — quirks only load at startup.
+
+**Gotchas:**
+- If HA complains `not a directory for dictionary value 'zha->custom_quirks_path'`, the folder doesn't physically exist yet at that path — create it first via Studio Code Server / File Editor, then restart.
+- The old generic `__1`..`__4` entities **don't disappear** after adding the quirk — they were already registered in HA's entity registry before the quirk existed, and HA doesn't retroactively remove them. HA also won't let you **delete** them outright while ZHA is still actively providing them (a live-integration entity) — only **disable** them (Settings → Devices & services → Entities → select → disable). Disabling is sufficient (hides from dashboards, stops updating). If this recurs after a future re-interview, the fix would be adding `.replaces()` with a custom cluster class in the quirk to fully take over the cluster instead of just adding a `.sensor()` on top — not yet needed/tried.
+
 ---
 
 ## Zigbee Configuration Notes

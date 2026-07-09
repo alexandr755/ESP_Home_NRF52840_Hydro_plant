@@ -264,6 +264,18 @@ Two things ruled out along the way — verified against the actual installed ESP
 - `zigbee: poll_interval` / `zigbee: keep_alive` — **do not exist** either (checked `esphome/components/zigbee/__init__.py` — only `sleepy` (bool), `power_source`, `wipe_on_boot`, `router` and a few others are real keys).
 - `logger: baud_rate: 0` alone (component still present, just not initializing serial) made no measurable difference vs removing the `logger:` block entirely — USB CDC ACM was not the culprit.
 
+### Battery Sizing (2026-07-09)
+
+With `deep_sleep` at 10s active / 20min sleep, active phase is only ~0.8% of each cycle — negligible to the average. Weighted average current ≈ (10mA×10 + 7mA×1200) / 1210 ≈ **7.02mA**, i.e. effectively just the 7mA idle floor.
+
+User's cell: **2500mAh 18650**. Runtime:
+- Raw (100% of rated capacity): 2500mAh / 7.02mA ≈ 356h ≈ **14.9 days**.
+- Conservative (80% usable capacity — don't fully deplete Li-ion, board's low-voltage cutoff/regulator dropout eats into the last part of the discharge curve): 2000mAh / 7.02mA ≈ 285h ≈ **11.9 days**.
+
+**Target of 10 days between charges is met**, with 2-5 days of margin even under the conservative estimate — no need for a bigger cell.
+
+Charge time at the `BOOST`-bridged 300mA rate (appropriate since 2500mAh > the seller's 500mAh bridging threshold): 2500mAh / 300mA ≈ 8.3h raw CC-phase, ~9-10h realistic total with the CV taper — fits an overnight charge.
+
 ## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09)
 
 ```yaml

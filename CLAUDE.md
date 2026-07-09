@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ESPHome firmware for a 4-plant soil moisture monitor (one board, 4 independent sensors). Target hardware: **Adafruit ItsyBitsy NRF52840**, communicating over **Zigbee** (End Device), integrated with **Home Assistant via Zigbee2MQTT**.
+ESPHome firmware for a 4-plant soil moisture monitor (one board, 4 independent sensors). Target hardware: **SuperMini NRF52840** (ProMicro-form-factor nRF52840-QIAA clone board — NOT a genuine Adafruit ItsyBitsy; the `nrf52: board: adafruit_itsybitsy_nrf52840` value in the yaml is just the closest available Zephyr board definition ESPHome offers and happens to compile/work, it does not describe the physical board). Corrected 2026-07-09 after reading the board's actual schematic/pinout (`schema.jpg`, seller pinout screenshots) — see "SuperMini NRF52840 Hardware Notes" below. Communicates over **Zigbee** (End Device), integrated with **Home Assistant** (ZHA, see below — moved off the original Z2M network for range reasons).
 
-Sensor: 4x capacitive soil moisture v1.2 (analog output), powered via GPIO switch to save battery (planned, shared switch — not yet wired).
-Power: 18650 Li-ion battery via TP4056 charging module (planned).
+Sensor: 4x capacitive soil moisture v1.2 (analog output), powered via the board's built-in VCC switch (P0.13, shared across all 4 sensors — not yet wired).
+Power: Li-ion battery (18650) via the board's **built-in** TP4054 charger — no external TP4056 module (superseded plan, do not add one, see below).
 
 ---
 
@@ -157,10 +157,13 @@ See `manual.md` step 8 for the full walkthrough.
 
 ### Rejoining a different network
 The board remembers whichever network it last joined (stored in flash). To make it forget and rejoin a *different* network:
-1. Recompile the firmware (no yaml changes needed — `wipe_on_boot: once` generates a fresh random magic number on every `esphome compile` invocation, which forces a wipe+rejoin on next boot, see Problem in "Zigbee Configuration Notes" below).
+1. Set `wipe_on_boot: once` in the yaml (temporarily — see note below), then recompile. Each `esphome compile` with `once` generates a fresh random magic number, which forces a wipe+rejoin on the firmware's next boot.
 2. Reflash via UF2.
 3. **Disable Permit Join on the network you don't want it to join, enable it only on the target network** — if both networks have Permit Join open simultaneously, which one the board joins is not guaranteed.
 4. Power on — board wipes its Zigbee state and joins whichever network has Permit Join active.
+5. Afterwards, set `wipe_on_boot` back to `false` and recompile/reflash once more — see note below.
+
+**Default is `wipe_on_boot: false` (changed 2026-07-09).** With `once`, *every* recompile (even for unrelated changes like adding a sensor) generates a new magic number and forces a rejoin on next boot — annoying once the board is already stably paired. Only switch to `once` temporarily when you actually want to force a rejoin (e.g. moving to a different network, per steps above); otherwise leave it on `false` so routine firmware updates don't disturb the existing pairing.
 
 ### Custom ZHA quirk (equivalent of the Z2M external converter, different ecosystem)
 A fresh device on ZHA shows generic sensor entities named `__1`..`__4` (raw ADC ratio, unit "V", wrong) instead of proper humidity/percent sensors — ZHA's default fallback for an unrecognized `genAnalogInput`/`AnalogInput` cluster, same underlying problem as Z2M's `Not supported: generated`. ZHA's equivalent of an "external converter" is a Python **quirk**, using the modern `QuirkBuilder` fluent API (`zigpy.quirks.v2`).
@@ -208,29 +211,44 @@ ESPHome warns: *"Single endpoint requires ZHA or at least Zigbee2MQTT 2.8.0"*. T
 
 ---
 
-## Pin Map (Adafruit ItsyBitsy NRF52840)
+## SuperMini NRF52840 Hardware Notes (confirmed 2026-07-09)
 
-Analog-capable pins on this board (Arduino alias → GPIO → SAADC channel), from the official variant files: A4=P0.02=AIN0, A5=P0.03=AIN1, A0=P0.04=AIN2, A6/D10=P0.05=AIN3, A2=P0.28=AIN4, A1=P0.30=AIN6, A3=P0.31=AIN7. Max 8 Zigbee endpoints on nrf52 (`CONF_MAX_EP_NUMBER = 8`).
+Real board is a **SuperMini NRF52840** ProMicro-form-factor clone (chip: nRF52840-QIAA), not a genuine Adafruit ItsyBitsy. Confirmed from the seller's schematic (`schema.jpg`) and pinout diagrams (`Screenshot_5.jpg`–`Screenshot_8.jpg`) checked into the repo root.
+
+- **Built-in Li-Po/Li-ion charger:** TP4054 linear charger IC. Solder battery to the `BATTERY+` / `B-` pads directly (no external TP4056 needed — do not wire one in parallel, two chargers fighting over the same cell is unsafe).
+- **Charge current jumper `BOOST`:** unbridged = 100mA charge current; solder-bridge the `BOOST` pad (next to VCC/RST) to raise it to 300mA. Seller explicitly says only bridge this if battery capacity > 500mAh — an 18650 (typically 2000mAh+) qualifies, bridging is appropriate (100mA on an 18650 would take ~20h+ to charge).
+- **Built-in switched VCC rail:** `P0.13` drives an onboard MOSFET gating the `VCC` (3.3V) pin — HIGH = VCC powered, LOW = VCC cut off. This **replaces** the originally-planned external GPIO+FET sensor power switch: wire all 4 soil sensors' VCC lines to the board's `VCC` pin (not directly to battery/3V-always-on), and use `P0.13` as an ESPHome `switch: platform: gpio` to power them only during a reading. (`P0.08`, previously reserved for this, is no longer needed for it — free.)
+- **No populated battery-voltage divider.** The schematic shows `BAT` routed only to unpopulated NC test pads — battery% needs a hand-added external resistor divider (see Pin Map below).
+- Physical GPIO breakout is **much sparser** than ItsyBitsy — only specific pins are brought to header holes: `P0.02(AIN0)/D19, P0.06/D1, P0.08/D0, P0.09, P0.10, P0.11/D7, P0.17/D2, P0.20/D3, P0.22/D4, P0.24/D5, P0.29(AIN5)/D20, P0.31(AIN7)/D21, P1.00/D6, P1.01, P1.02, P1.04/D8, P1.06/D9, P1.07, P1.11, P1.13, P1.15`, plus `VCC`, `RST`, `GND`×several, `BATTERY+`×2, and the SWD debug pins (`VDD/DIO/CLK/GND`). Notably `P0.03/P0.04/P0.05` (AIN1-3, used by `flower_2`-`flower_4` in the working config) are **not** on this list — they were evidently hand-soldered directly to the chip pads/vias rather than a header pin. Keep this in mind before assuming any pin is accessible without fine SMD soldering — check against this list first.
+
+## Pin Map
+
+Analog-capable header pins actually broken out on this board: `P0.02=AIN0=D19`, `P0.29=AIN5=D20`, `P0.31=AIN7=D21` (plus `P0.03/P0.04/P0.05=AIN1-3`, hand-soldered directly to chip pads for this project, not header pins).
 
 | ESPHome ID | Physical pin | Role |
 |---|---|---|
-| `power_pin_pull` | `P0.13` | Bus power pull (clone board fix) |
-| `sensor_vcc_power` | `P0.08` | Sensor VCC enable switch (planned, shared across all 4 sensors — not yet wired) |
-| `flower_1` (ADC) | `P0.02` (AIN0 / A4) | Soil moisture sensor 1 |
-| `flower_2` (ADC) | `P0.03` (AIN1 / A5) | Soil moisture sensor 2 |
-| `flower_3` (ADC) | `P0.04` (AIN2 / A0) | Soil moisture sensor 3 |
-| `flower_4` (ADC) | `P0.05` (AIN3 / A6/D10) | Soil moisture sensor 4 |
-| battery monitor | `P0.28` (AIN4 / A2) reserved | Voltage divider for battery % (not yet wired) |
+| `sensor_vcc_power` | `P0.13` | Built-in VCC MOSFET switch — sensor power enable (planned, shared across all 4 sensors — not yet wired) |
+| `flower_1` (ADC) | `P0.02` (AIN0 / D19, header pin) | Soil moisture sensor 1 |
+| `flower_2` (ADC) | `P0.03` (AIN1, hand-soldered to chip pad) | Soil moisture sensor 2 |
+| `flower_3` (ADC) | `P0.04` (AIN2, hand-soldered to chip pad) | Soil moisture sensor 3 |
+| `flower_4` (ADC) | `P0.05` (AIN3, hand-soldered to chip pad) | Soil moisture sensor 4 |
+| battery monitor | `P0.31` (AIN7 / D21, header pin) planned | External voltage divider from `BATTERY+` — not yet wired |
 
-Free/spare after the above: `P0.30` (AIN6/A1), `P0.31` (AIN7/A3).
+Free/spare after the above: `P0.29` (AIN5/D20), `P0.08` (D0, no longer needed for sensor power now that `P0.13` covers it).
 
-**`dcdc: false`** — must stay off; ItsyBitsy NRF52840 has no external inductor for the DC/DC converter. Without this flag the board may not start reliably.
+**`dcdc: false`** — must stay off; this board has no external inductor for the DC/DC converter. Without this flag the board may not start reliably.
 
 **`dfu: true`** — enables USB DFU mode (flash without pressing hardware buttons).
 
 ---
 
-## Current Working Config (4 sensors, confirmed compiling 2026-07-06)
+## deep_sleep (added 2026-07-09, for sleep-current measurement)
+
+`deep_sleep: run_duration: 5s / sleep_duration: 30s` added to the yaml — short cycle specifically so a multimeter/ammeter in series with the battery can catch the current drop during the sleep phase. `zigbee: sleepy` deliberately left `false` for this test (flipping it to `true` is a separate, riskier step per "sleepy: true breaks initial pairing" above — not needed just to observe sleep current).
+
+**Note:** `nrf52: sleep_mode: system_off_ram_retention` (mentioned in some third-party ESPHome/nRF52 write-ups as the key to reaching µA-level sleep current) **does not exist** in the installed ESPHome version's `nrf52` component schema (checked `esphome/components/nrf52/__init__.py` directly — no such key, no `hardware_watchdog` option either). Don't re-add it without re-verifying against the actual installed component source first.
+
+## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09)
 
 ```yaml
 esphome:
@@ -247,7 +265,11 @@ nrf52:
 
 zigbee:
   sleepy: false
-  wipe_on_boot: once
+  wipe_on_boot: false
+
+deep_sleep:
+  run_duration: 5s
+  sleep_duration: 30s
 
 sensor:
   - platform: adc
@@ -274,4 +296,26 @@ sensor:
     icon: "mdi:water-percent"
     update_interval: 60s
     id: flower_4
+  - platform: adc
+    pin: P0.31
+    name: "Батарея_напряжение"
+    icon: "mdi:battery"
+    unit_of_measurement: "V"
+    update_interval: 60s
+    id: battery_voltage
+    filters:
+      # raw = (Vbat/2) / Vref, divider 470k+470k, Vref assumed 3.6V (nRF52 SAADC default gain 1/6) — не подтверждено, откалибровать по мультиметру
+      - multiply: 7.2
+  - platform: template
+    name: "Батарея_процент"
+    icon: "mdi:battery-percent"
+    unit_of_measurement: "%"
+    update_interval: 60s
+    id: battery_percent
+    lambda: |-
+      float v = id(battery_voltage).state;
+      float pct = (v - 3.0f) / (4.2f - 3.0f) * 100.0f;
+      if (pct < 0.0f) pct = 0.0f;
+      if (pct > 100.0f) pct = 100.0f;
+      return pct;
 ```

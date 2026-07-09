@@ -12,7 +12,11 @@ nrf52:
 
 zigbee:
   sleepy: false
-  wipe_on_boot: once
+  wipe_on_boot: false
+
+deep_sleep:
+  run_duration: 5s
+  sleep_duration: 30s
 
 sensor:
   - platform: adc
@@ -39,3 +43,25 @@ sensor:
     icon: "mdi:water-percent"
     update_interval: 60s
     id: flower_4
+  - platform: adc
+    pin: P0.31
+    name: "Батарея_напряжение"
+    icon: "mdi:battery"
+    unit_of_measurement: "V"
+    update_interval: 60s
+    id: battery_voltage
+    filters:
+      # raw = (Vbat/2) / Vref, divider 470k+470k, Vref assumed 3.6V (nRF52 SAADC default gain 1/6) — не подтверждено, откалибровать по мультиметру после прошивки
+      - multiply: 7.2
+  - platform: template
+    name: "Батарея_процент"
+    icon: "mdi:battery-percent"
+    unit_of_measurement: "%"
+    update_interval: 60s
+    id: battery_percent
+    lambda: |-
+      float v = id(battery_voltage).state;
+      float pct = (v - 3.0f) / (4.2f - 3.0f) * 100.0f;
+      if (pct < 0.0f) pct = 0.0f;
+      if (pct > 100.0f) pct = 100.0f;
+      return pct;

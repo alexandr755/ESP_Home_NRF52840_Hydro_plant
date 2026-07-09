@@ -199,8 +199,8 @@ A fresh device on ZHA shows generic sensor entities named `__1`..`__4` (raw ADC 
 
 Always keep at least the ADC sensor in the config even during connectivity testing.
 
-### sleepy: true breaks initial pairing
-`zigbee: sleepy: true` (Sleepy End Device mode) prevents Z2M from completing the pairing handshake. Use `sleepy: false` until pairing is confirmed working. Re-enable only after deep_sleep is also configured.
+### sleepy: true breaks initial pairing (but is fine once already paired)
+`zigbee: sleepy: true` (Sleepy End Device mode) prevents Z2M from completing the pairing handshake — keep `sleepy: false` until pairing is confirmed working. Once paired, flipping to `sleepy: true` is safe (confirmed 2026-07-09 on the already-paired ZHA network, no rejoin needed, no drop from network).
 
 ### on_boot priority and update_interval
 - Boot sequence (sensor power → read → power off) must run at `priority: -100` (after all components init), not `priority: 600` (too early, Zigbee not joined yet).
@@ -236,17 +236,33 @@ Analog-capable header pins actually broken out on this board: `P0.02=AIN0=D19`, 
 
 Free/spare after the above: `P0.29` (AIN5/D20), `P0.08` (D0, no longer needed for sensor power now that `P0.13` covers it).
 
-**`dcdc: false`** — must stay off; this board has no external inductor for the DC/DC converter. Without this flag the board may not start reliably.
+**`dcdc: true`** (changed 2026-07-09, was `false`) — this board turned out to have the DC/DC inductor populated after all (the "no inductor, must stay off" note was inherited from the wrong-board ItsyBitsy assumption and never actually re-verified on the real SuperMini hardware). Flipping to `true` booted fine and measurably dropped current draw (~18mA→10mA active, ~12.4mA→7mA idle) — see "Power Consumption / Sleep Current Testing" below. If a future board revision genuinely lacks the inductor, `dcdc: true` would likely fail to boot — recoverable via UF2 bootloader (double-Reset is independent of app firmware) reflashing `dcdc: false`.
 
 **`dfu: true`** — enables USB DFU mode (flash without pressing hardware buttons).
 
 ---
 
-## deep_sleep (added 2026-07-09, for sleep-current measurement)
+## Power Consumption / Sleep Current Testing (2026-07-09)
 
-`deep_sleep: run_duration: 5s / sleep_duration: 30s` added to the yaml — short cycle specifically so a multimeter/ammeter in series with the battery can catch the current drop during the sleep phase. `zigbee: sleepy` deliberately left `false` for this test (flipping it to `true` is a separate, riskier step per "sleepy: true breaks initial pairing" above — not needed just to observe sleep current).
+Goal: measure real battery current draw with an ammeter in series with the battery, then minimize it. Iterated through several rounds — results by config, in order tried:
 
-**Note:** `nrf52: sleep_mode: system_off_ram_retention` (mentioned in some third-party ESPHome/nRF52 write-ups as the key to reaching µA-level sleep current) **does not exist** in the installed ESPHome version's `nrf52` component schema (checked `esphome/components/nrf52/__init__.py` directly — no such key, no `hardware_watchdog` option either). Don't re-add it without re-verifying against the actual installed component source first.
+| Config | Active (run_duration) | Idle/sleep plateau |
+|---|---|---|
+| `sleepy: false`, `deep_sleep` 5s/30s, `dcdc: false`, logger DEBUG over USB | 18mA | 12mA (flat, never drops further) |
+| + `sleepy: true`, `power_source: BATTERY`, `preferences.flash_write_interval: never`, deep_sleep 5s/5s | 18mA | 12mA (unchanged) |
+| + `logger` component fully removed (not just `baud_rate: 0`) | 18mA | 12.4mA (unchanged — ruled out USB CDC ACM as the cause) |
+| + **`dcdc: true`**, `logger: level: NONE` + `baud_rate: 0`, deep_sleep `run_duration: 10s` / `sleep_duration: 20min` | **10mA** | **7mA (flat)** |
+
+**Conclusion: ~7mA is the practical floor** for this ESPHome/Zephyr/nRF52 Zigbee sleepy-end-device stack — matches exactly the number reported in [esphome/esphome#13926](https://github.com/esphome/esphome/issues/13926) ("idle current stays ~7mA (expected deep-sleep-class current)"), which was closed by [PR #13950](https://github.com/esphome/esphome/pull/13950) (already included in our installed 2026.6.x version) without actually reaching the reporter's hoped-for µA range.
+
+**Root cause confirmed (2026-07-09): it's the `zigbee:` component, not our config.** Built a throwaway diagnostic build (`test-no-zigbee.yaml`, esphome name `flower-monitor-nozigbee-test`, same as our real config but with the entire `zigbee:` block commented out — see the file in repo root) and reflashed. Result: sleep current dropped from ~7mA to **14µA** — a ~500x drop. This directly matches the still-open, unresolved [esphome/esphome#17241](https://github.com/esphome/esphome/issues/17241) ("nRF52840 Zigbee sleepy deep_sleep still draws ~5.88 mA with minimal YAML") — same symptom, no maintainer fix yet as of this writing. **This confirms it's an upstream ESPHome/Zephyr Zigbee-stack bug (radio/timer not fully releasing before `sys_poweroff()`), not something fixable from our yaml.** `deep_sleep`, `dcdc: true`, and disabling `logger` were still worthwhile (they got active current from 18mA→10mA and are harmless/beneficial), but the 7mA idle floor is a hard ceiling until upstream fixes #17241.
+
+**Decision: accepted 7mA as good enough while Zigbee connectivity is required, stopped optimizing further** (rough runtime estimate on an 18650 ~2600mAh: ~2 weeks between charges). Revisit if/when #17241 gets a fix upstream — re-test by reflashing the normal (with-Zigbee) config and re-measuring.
+
+Two things ruled out along the way — verified against the actual installed ESPHome component source before/after trying, don't re-attempt without re-checking:
+- `nrf52: sleep_mode: system_off_ram_retention` — **does not exist** in `esphome/components/nrf52/__init__.py`'s schema (also no `hardware_watchdog` option). Third-party write-ups describing it are inaccurate or describe an unreleased/different version.
+- `zigbee: poll_interval` / `zigbee: keep_alive` — **do not exist** either (checked `esphome/components/zigbee/__init__.py` — only `sleepy` (bool), `power_source`, `wipe_on_boot`, `router` and a few others are real keys).
+- `logger: baud_rate: 0` alone (component still present, just not initializing serial) made no measurable difference vs removing the `logger:` block entirely — USB CDC ACM was not the culprit.
 
 ## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09)
 
@@ -255,21 +271,28 @@ esphome:
   name: "flower-monitor"
   friendly_name: "Flower Monitor"
 
+# Полностью отключаем USB-логирование, чтобы усыпить USB-контроллер чипа
 logger:
-  level: DEBUG
+  level: NONE
+  baud_rate: 0
 
 nrf52:
   board: adafruit_itsybitsy_nrf52840
-  dcdc: false
+  dcdc: true
   dfu: true
 
 zigbee:
-  sleepy: false
+  sleepy: true
   wipe_on_boot: false
+  power_source: BATTERY
+
+preferences:
+  flash_write_interval: never
 
 deep_sleep:
-  run_duration: 5s
-  sleep_duration: 30s
+  id: deep_sleep_control
+  run_duration: 10s
+  sleep_duration: 20min
 
 sensor:
   - platform: adc

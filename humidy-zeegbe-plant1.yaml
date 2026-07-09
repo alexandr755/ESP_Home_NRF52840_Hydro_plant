@@ -23,7 +23,7 @@ preferences:
 deep_sleep:
   id: deep_sleep_control
   run_duration: 10s    # Даем 10 секунд на сопряжение/передачу данных в Zigbee
-  sleep_duration: 20min # Сон на 20 минут (или измените на нужное вам время)
+  sleep_duration: 30min # Сон на 30 минут — боевой интервал для теста rejoin/стабильности
 
 sensor:
   - platform: adc

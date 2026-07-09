@@ -255,9 +255,29 @@ Goal: measure real battery current draw with an ammeter in series with the batte
 
 **Conclusion: ~7mA is the practical floor** for this ESPHome/Zephyr/nRF52 Zigbee sleepy-end-device stack — matches exactly the number reported in [esphome/esphome#13926](https://github.com/esphome/esphome/issues/13926) ("idle current stays ~7mA (expected deep-sleep-class current)"), which was closed by [PR #13950](https://github.com/esphome/esphome/pull/13950) (already included in our installed 2026.6.x version) without actually reaching the reporter's hoped-for µA range.
 
-**Root cause confirmed (2026-07-09): it's the `zigbee:` component, not our config.** Built a throwaway diagnostic build (`test-no-zigbee.yaml`, esphome name `flower-monitor-nozigbee-test`, same as our real config but with the entire `zigbee:` block commented out — see the file in repo root) and reflashed. Result: sleep current dropped from ~7mA to **14µA** — a ~500x drop. This directly matches the still-open, unresolved [esphome/esphome#17241](https://github.com/esphome/esphome/issues/17241) ("nRF52840 Zigbee sleepy deep_sleep still draws ~5.88 mA with minimal YAML") — same symptom, no maintainer fix yet as of this writing. **This confirms it's an upstream ESPHome/Zephyr Zigbee-stack bug (radio/timer not fully releasing before `sys_poweroff()`), not something fixable from our yaml.** `deep_sleep`, `dcdc: true`, and disabling `logger` were still worthwhile (they got active current from 18mA→10mA and are harmless/beneficial), but the 7mA idle floor is a hard ceiling until upstream fixes #17241.
+**Root cause confirmed (2026-07-09): it's the `zigbee:` component, not our config.** Built a throwaway diagnostic build (`test-no-zigbee.yaml`, esphome name `flower-monitor-nozigbee-test`, same as our real config but with the entire `zigbee:` block commented out — see the file in repo root) and reflashed. Result: sleep current dropped from ~7mA to **14µA** — a ~500x drop. This directly matches the still-open, unresolved [esphome/esphome#17241](https://github.com/esphome/esphome/issues/17241) ("nRF52840 Zigbee sleepy deep_sleep still draws ~5.88 mA with minimal YAML") — same symptom, no maintainer fix yet as of this writing.
 
-**Decision: accepted 7mA as good enough while Zigbee connectivity is required, stopped optimizing further** (rough runtime estimate on an 18650 ~2600mAh: ~2 weeks between charges). Revisit if/when #17241 gets a fix upstream — re-test by reflashing the normal (with-Zigbee) config and re-measuring.
+**Precise mechanism (corrected 2026-07-09 after reading the actual ESPHome source, not a summary):** our yaml sets `deep_sleep: sleep_duration: 20min` explicitly, so `deep_sleep_zephyr.cpp`'s `deep_sleep_()` takes the **same `wakeable_delay()` branch regardless of Zigbee** — it is *not* a missed `sys_poweroff()` call as first suspected. The 7mA is simply the nRF52840's 802.15.4 radio + ZBOSS stack staying powered/RX-on throughout the delay (close to the chip's documented radio-RX current), because a Zigbee Sleepy End Device still needs to poll its parent periodically. Also ruled out as a fix: `sys_poweroff()` (true nRF52840 System OFF) **cannot wake itself on a timer/RTC at all** — only external GPIO/LPCOMP/NFC/VBUS/reset can wake from System OFF — so it's structurally incompatible with "wake itself after N minutes" regardless of Zigbee.
+
+**Evaluated and rejected: rewriting the firmware in raw Zephyr + nRF Connect SDK (NCS) Zigbee, built via PlatformIO**, as an alternative to fighting the ESPHome bug. Two background research passes concluded this is a dead end for our goals:
+- Nordic's own NCS Zigbee stack **does** reach genuine µA sleep in their own reference examples (~1.8µA documented) — proving the radio/stack itself is capable, and reinforcing that this is specifically an ESPHome integration gap, not a hardware/Zephyr-Zigbee-subsystem limit.
+- **But PlatformIO can't build it anyway** — PlatformIO's `zephyr` framework builds upstream Zephyr; NCS's Zigbee stack (ZBOSS) is closed-source binaries shipped only in NCS, not upstream Zephyr. Going raw-Zigbee in practice means abandoning PlatformIO for Nordic's `west`/nRF-Connect-for-VS-Code toolchain — contrary to what was asked.
+- Nordic is also deprecating Zigbee R22 on nRF52840 going forward (R23 targets a different chip family) — a bad time to invest in a from-scratch rewrite on this SoC.
+- Estimated effort (hand-rolling ZCL clusters/endpoints, ADC, sleepy-ED join/poll, power management) is multi-week for someone not already fluent in Zephyr+ZBOSS — not justified given the above.
+
+**Experimental fix attempted (2026-07-09): local patch to explicitly sleep the radio.** Patched `deep_sleep_zephyr.cpp` **inside the installed ESPHome venv package** (`~/esphome-venv/lib/python3.14/site-packages/esphome/components/deep_sleep/deep_sleep_zephyr.cpp` in WSL — NOT a file in this repo) to call `nrf_802154_sleep()` before the `wakeable_delay()` and `nrf_802154_receive()` after, when `USE_ZIGBEE` is defined — bypassing ZBOSS's own radio management for just the sleep window. Same "patch an installed toolchain file locally" pattern already used for `install.py` (Problem 2 above). **Backed up first**: `deep_sleep_zephyr.cpp.orig` sits next to it in the same WSL directory — restore from there (or `pip install --force-reinstall esphome==2026.6.4`) if this needs reverting.
+
+⚠️ **This patch is volatile** — any future `pip install --upgrade esphome` in `~/esphome-venv` will silently overwrite it back to stock behavior (7mA floor returns) without any error. If sleep current unexpectedly goes back to ~7mA after unrelated ESPHome maintenance, re-check/reapply this patch first before assuming something else broke.
+
+Named risks going in: driving the radio driver directly underneath a running ZBOSS/MPSL stack can desync ZBOSS's internal state, and after the radio is off for a while the ZHA coordinator might age the device out of its neighbor table, forcing a **rejoin every wake cycle** instead of resuming — a functional regression even if power improves.
+
+**✅ Confirmed working (2026-07-09), both checks passed:**
+- **Power:** short-interval test (`sleep_duration: 20s`) showed a clean cycle — 14µA during sleep, jumps to ~7-10mA only during the `run_duration` active window, back to 14µA — no instability once correctly interpreted (an earlier "14µA→7mA→14µA" reading was initially misread as ZBOSS fighting the patch; it was just the normal active/sleep alternation).
+- **Function:** ran a real production-length soak test at `sleep_duration: 30min`. Checked the device in HA/ZHA after several cycles — `Soil moisture 4` (and others) reporting fresh values every cycle (`21 минуту назад` matching the 30min schedule), **LQI 255 (max), RSSI -35dBm (excellent)**, and the device's Activity log shows only manually-triggered "Идентификация" (Identify) events — **no repeated Interview/rejoin events**. The device stays joined and resumes normally each wake, exactly as hoped — the feared rejoin-every-cycle regression did not materialize.
+
+**Decision: adopted.** The patch is the current production config (`sleep_duration: 30min` in the yaml as of this writing). Remember it lives in the WSL venv (not this repo) and is volatile across `pip install --upgrade esphome` — see the warning above. Worth reporting upstream to [esphome/esphome#17241](https://github.com/esphome/esphome/issues/17241) as a working fix, not just a repro (see `github-comment-draft.md` — needs updating with this outcome before posting).
+
+**Fallback if this ever regresses (e.g. after an ESPHome upgrade wipes the patch): revert to `deep_sleep_zephyr.cpp.orig`, recompile, and fall back to the documented 7mA baseline** — already confirmed to meet the 10-day recharge target on the user's 2500mAh cell (see "Battery Sizing" below), so there's no functional risk in reverting if needed.
 
 Two things ruled out along the way — verified against the actual installed ESPHome component source before/after trying, don't re-attempt without re-checking:
 - `nrf52: sleep_mode: system_off_ram_retention` — **does not exist** in `esphome/components/nrf52/__init__.py`'s schema (also no `hardware_watchdog` option). Third-party write-ups describing it are inaccurate or describe an unreleased/different version.
@@ -276,7 +296,7 @@ User's cell: **2500mAh 18650**. Runtime:
 
 Charge time at the `BOOST`-bridged 300mA rate (appropriate since 2500mAh > the seller's 500mAh bridging threshold): 2500mAh / 300mA ≈ 8.3h raw CC-phase, ~9-10h realistic total with the CV taper — fits an overnight charge.
 
-## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09)
+## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09; requires the `deep_sleep_zephyr.cpp` radio-sleep patch above to actually reach µA-range sleep — a stock ESPHome install will only get the 7mA floor with this same yaml)
 
 ```yaml
 esphome:
@@ -304,7 +324,7 @@ preferences:
 deep_sleep:
   id: deep_sleep_control
   run_duration: 10s
-  sleep_duration: 20min
+  sleep_duration: 30min
 
 sensor:
   - platform: adc

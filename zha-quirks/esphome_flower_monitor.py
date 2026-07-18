@@ -7,11 +7,14 @@ MODEL = "flower-monitor"
 (
     QuirkBuilder(MANUFACTURER, MODEL)
     .sensor(
+        # Calibrated 2026-07-18 (real capacitive sensors wired to endpoints 1-4, same calibration
+        # reused across all 4 — same sensor batch). ESPHome now applies calibrate_linear itself and
+        # already sends 0-100, hence multiplier=1 (not 100) on all four of these.
         "present_value",
         AnalogInput.cluster_id,
         endpoint_id=1,
         divisor=1,
-        multiplier=100,
+        multiplier=1,
         unit="%",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
@@ -24,7 +27,7 @@ MODEL = "flower-monitor"
         AnalogInput.cluster_id,
         endpoint_id=2,
         divisor=1,
-        multiplier=100,
+        multiplier=1,
         unit="%",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
@@ -37,7 +40,7 @@ MODEL = "flower-monitor"
         AnalogInput.cluster_id,
         endpoint_id=3,
         divisor=1,
-        multiplier=100,
+        multiplier=1,
         unit="%",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
@@ -50,7 +53,7 @@ MODEL = "flower-monitor"
         AnalogInput.cluster_id,
         endpoint_id=4,
         divisor=1,
-        multiplier=100,
+        multiplier=1,
         unit="%",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,

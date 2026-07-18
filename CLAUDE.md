@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ESPHome firmware for a 4-plant soil moisture monitor (one board, 4 independent sensors). Target hardware: **SuperMini NRF52840** (ProMicro-form-factor nRF52840-QIAA clone board — NOT a genuine Adafruit ItsyBitsy; the `nrf52: board: adafruit_itsybitsy_nrf52840` value in the yaml is just the closest available Zephyr board definition ESPHome offers and happens to compile/work, it does not describe the physical board). Corrected 2026-07-09 after reading the board's actual schematic/pinout (`schema.jpg`, seller pinout screenshots) — see "SuperMini NRF52840 Hardware Notes" below. Communicates over **Zigbee** (End Device), integrated with **Home Assistant** (ZHA, see below — moved off the original Z2M network for range reasons).
 
-Sensor: 4x capacitive soil moisture v1.2 (analog output), powered via the board's built-in VCC switch (P0.13, shared across all 4 sensors — not yet wired).
+Sensor: 4x capacitive soil moisture v1.2 (analog output), powered via the board's built-in VCC switch (P0.13, shared across all 4 sensors). **Sensor 1 physically wired and calibrated 2026-07-18**; sensors 2-4 share the same `switch:`/calibration in yaml but are not yet physically wired (still floating pins) — see "Soil Moisture Sensor Wiring & Calibration" below.
 Power: Li-ion battery (18650) via the board's **built-in** TP4054 charger — no external TP4056 module (superseded plan, do not add one, see below).
 
 ---
@@ -174,7 +174,7 @@ A fresh device on ZHA shows generic sensor entities named `__1`..`__4` (raw ADC 
 - `device_class=SensorDeviceClass.HUMIDITY`, `unit="%"`, `state_class=SensorStateClass.MEASUREMENT`
 - `suggested_display_precision=0` — rounds the HA frontend display to whole percent (doesn't touch the stored/logged value)
 
-**Extended 2026-07-18** with 2 more `.sensor()` calls for the battery sensors added to the yaml: endpoint 5 = `battery_voltage` (`multiplier=1`, `unit="V"`, `device_class=VOLTAGE` — ESPHome already sends the post-filter, already-in-volts value, no quirk-side scaling needed), endpoint 6 = `battery_percent` (`multiplier=1`, `unit="%"`, `device_class=BATTERY`). See "Battery Voltage Calibration" further down for the calibration work and an open issue with these two entities updating rarely in HA.
+**Extended 2026-07-18** with 2 more `.sensor()` calls for the battery sensors added to the yaml: endpoint 5 = `battery_voltage` (`multiplier=1`, `unit="V"`, `device_class=VOLTAGE` — ESPHome already sends the post-filter, already-in-volts value, no quirk-side scaling needed), endpoint 6 = `battery_percent` (`multiplier=1`, `unit="%"`, `device_class=BATTERY`). See "Battery Voltage Calibration" further down for the calibration work. **Also updated same day**: endpoints 1-4 (soil moisture) switched from `multiplier=100` (raw 0-1 ratio) to `multiplier=1`, since ESPHome now applies `calibrate_linear` itself and sends an already-0-100 value — see "Soil Moisture Sensor Wiring & Calibration" further down.
 
 **Gotcha confirmed again 2026-07-18: adding new endpoints to an already-paired device doesn't surface new entities just from restarting HA.** A full HA restart reloads the quirk code, but ZHA still needs to actually discover the new endpoints/clusters on the device, which only happens on interview. Try **ZHA device page → Reconfigure Device** first (worked without needing to drop pairing) before resorting to the heavier remove+re-pair flow described under "Rejoining a different network" above.
 
@@ -231,7 +231,7 @@ Analog-capable header pins actually broken out on this board: `P0.02=AIN0=D19`, 
 
 | ESPHome ID | Physical pin | Role |
 |---|---|---|
-| `sensor_vcc_power` | `P0.13` | Built-in VCC MOSFET switch — sensor power enable (planned, shared across all 4 sensors — not yet wired) |
+| `sensor_vcc_power` | `P0.13` | Built-in VCC MOSFET switch — sensor power enable, wired and confirmed working 2026-07-18 (`switch: platform: gpio`, toggled via `interval:`, see "Soil Moisture Sensor Wiring & Calibration" below) |
 | `flower_1` (ADC) | `P0.02` (AIN0 / D19, header pin) | Soil moisture sensor 1 |
 | `flower_2` (ADC) | `P0.03` (AIN1, hand-soldered to chip pad) | Soil moisture sensor 2 |
 | `flower_3` (ADC) | `P0.04` (AIN2, hand-soldered to chip pad) | Soil moisture sensor 3 |
@@ -312,13 +312,35 @@ Physical divider soldered: `BATTERY+` → 470k → node (→ `P0.31`) → 470k �
 
 **Gotcha confirmed again: new Zigbee endpoints on an already-paired device need a fresh discovery.** After adding the `battery_voltage`/`battery_percent` sensors (new endpoints 5/6) and restarting HA (which loads the updated quirk), the new entities did not appear — same root cause as the earlier 4-sensor endpoint changes (see "ZHA Second Coordinator" above). Fix: ZHA device page → **Reconfigure Device** (lighter than remove+re-pair, worked this time without dropping the existing pairing).
 
-**Unresolved as of this writing (2026-07-18): battery entities update far less often in HA than the soil moisture entities**, even though `esphome logs` shows the firmware computing a fresh, correct value every single wake cycle. The log lines proving this are `[C][zigbee.sensor:029]` — the `[C]` tag means this is a **local `dump_config` printout at boot/setup**, not proof that a Zigbee "Report Attributes" packet actually reached the coordinator. Leading hypothesis: ZCL attribute reporting for `AnalogInput.presentValue` has a `reportable_change` threshold (configured by the coordinator via Configure Reporting, or a zigpy/quirk default) that the device only exceeds — and therefore only *transmits* a report — when the raw pre-quirk-multiplier value changes enough between wakes. Soil moisture's raw 0-1 ratio has enough natural sensor noise/soil variance to cross that threshold almost every cycle; battery pin voltage barely moves between 20s/20min cycles (near-full battery, tiny self-discharge) and rarely does. Was mid-investigation into zigpy's `QuirkBuilder.sensor(reporting_config=...)` parameter (a `ReportingConfig(min_interval, max_interval, reportable_change)` object) to force more frequent reports on endpoints 5/6 — **not yet applied to the quirk file, not yet confirmed**. Next session: finish checking the exact `ReportingConfig` API (a scratch venv with `pip install zigpy` in WSL at `/tmp/zigpy-check` was used to inspect `zigpy/quirks/v2/__init__.py` — cleared/not persisted, recreate if needed) and add explicit reporting config to the two new `.sensor()` calls in `zha-quirks/esphome_flower_monitor.py`.
+**RESOLVED: the "battery entities update far less often than soil moisture" mystery above was a false lead — it was the UF2-reflash-silently-fails gotcha the whole time.** Once a build was verified to actually be running (via debug log, per the gotcha above), battery endpoints 5/6 updated every single wake cycle without exception, same as everything else. The `reportable_change`/ZCL-reporting-threshold hypothesis was never needed and nothing was changed in the quirk to address it — no `reporting_config` parameter was ever added. If this symptom resurfaces, re-check the reflash first before re-opening this investigation.
 
 **Current yaml is in a temporary diagnostic state, not production — do not assume the defaults below are what's deployed:**
 - `logger: level: DEBUG` (should be `level: NONE` / `baud_rate: 0` for production — see "Power Consumption" above, this alone costs meaningful battery current)
 - `deep_sleep: sleep_duration: 20s` (should be `30min` for production)
+- `interval: - interval: 20s` (the soil-moisture read cycle, see below — must track `sleep_duration` if it changes)
 
-Both were intentionally left in this state at the end of the 2026-07-18 session (mid-investigation into the reporting-frequency issue above) — **revert both before any real deployment**, but not until the reporting issue is resolved and re-verified with fast cycles.
+Left in this state intentionally through the 2026-07-18 sensor-wiring work below (fast cycles make iterating on physical wiring much less tedious) — **revert all three together before any real deployment.**
+
+---
+
+## Soil Moisture Sensor Wiring & Calibration (2026-07-18)
+
+Sensor 1 (capacitive v1.2) physically wired: `VCC` → board `VCC` (switched via `P0.13`, not `BATTERY+`/always-on — a sensor draws ~5mA, which would cost ~350x the patched sleep current of 14µA if left powered through sleep), `GND` → board `GND`, `AOUT` → `P0.02`.
+
+**Bug found and fixed: `esphome: on_boot:` only fires once per physical power-on, not once per deep_sleep wake cycle.** The radio-sleep patch (see "Power Consumption" above) makes `deep_sleep_()` call `wakeable_delay()` — a blocking delay **inside the same running process**, not a reboot. `on_boot` is tied to `Application::setup()`, which only runs at genuine cold start, so a `switch.turn_on` → `delay` → `component.update` → `switch.turn_off` sequence under `on_boot` only ever executes the *first* wake, then never again — the switch is left OFF and the ADC sensors (`update_interval: never`) are never re-triggered. This was caught by comparing against `battery_voltage`, which uses a normal `update_interval` (a real recurring component-scheduler timer, not a boot-only trigger) and reliably updated every cycle in the same log. **Fix: replaced `on_boot` with a top-level `interval:` component** running the identical action sequence (switch on → 200ms settle → `component.update` on all 4 flower sensors → 100ms → switch off) on a period currently matching `sleep_duration` (`20s`, diagnostic) — a recurring interval timer behaves like `update_interval` and reliably re-fires each wake (confirmed by `Set attribute endpoint: 1` appearing every cycle after the fix, not just once).
+
+**Gotcha: switch on/off transitions log at `ESP_LOGV` (VERBOSE), not `DEBUG`.** `logger: level: DEBUG` will never show `'sensor_vcc_power' Turning ON.`/`Turning OFF.` lines even though the switch is actually toggling correctly — confirmed only after temporarily bumping to `level: VERBOSE` (very noisy, mostly `ZB_COMMON_SIGNAL_CAN_SLEEP` spam — revert back to `DEBUG` right after checking).
+
+**Calibration (sensor 1, capacitive v1.2 on P0.02), via `calibrate_linear` + `clamp` filters:**
+| Condition | Voltage | Notes |
+|---|---|---|
+| Dry air | ~2.19V (avg of 2.175-2.200 across 3 cycles) | direction: dryer = **higher** voltage for this sensor type |
+| Water (submerged to the board-marked line) | ~0.938V (avg of 0.936-0.939 across 3 cycles) | |
+| Moist potted soil (real-world sanity check) | — | read back as 36.66%, a sane in-between value, not a calibration point |
+
+Filter: `calibrate_linear: [2.19 -> 0.0, 0.938 -> 100.0]` then `clamp: min_value: 0.0, max_value: 100.0`. Note the direction reversal (higher input maps to *lower* output) — `calibrate_linear` handles this fine, it's just linear interpolation/extrapolation between the two points.
+
+**This changes what's sent over Zigbee, so the quirk changed too**: endpoint 1 previously assumed ESPHome sends a raw 0-1 ratio (`multiplier=100` in the quirk, same convention as the still-unwired endpoints 2-4). Now that ESPHome applies `calibrate_linear` itself and sends an already-0-100 value, the quirk's `multiplier` for endpoint 1 changed to `1` (same pattern as `battery_percent`/endpoint 6). **Sensors 2-4 got the identical yaml filters and quirk `multiplier=1` pre-emptively** (reusing sensor 1's calibration, same batch/model) even though they are **not yet physically wired** — still floating pins, will read nonsense (clamped near 100%, since floating ~0.5V is below the "wet" calibration point) until wired. Wire them the same way as sensor 1 (`VCC`→board `VCC`, `GND`→board `GND`, `AOUT`→`P0.03`/`P0.04`/`P0.05` respectively) and reflash; no further yaml/quirk changes needed unless their individual calibration turns out to differ enough to matter.
 
 ---
 

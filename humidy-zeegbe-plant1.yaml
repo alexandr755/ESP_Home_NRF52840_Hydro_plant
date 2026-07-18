@@ -2,7 +2,8 @@ esphome:
   name: "flower-monitor"
   friendly_name: "Flower Monitor"
 
-# ВРЕМЕННО включено для диагностики прошивки/значений батареи — вернуть level: NONE, baud_rate: 0 после
+# ВРЕМЕННО включено для диагностики — вернуть level: NONE, baud_rate: 0 после.
+# Понижено обратно с VERBOSE (было нужно только чтобы разово подтвердить switch Turning ON/OFF).
 logger:
   level: DEBUG
 
@@ -19,6 +20,28 @@ zigbee:
 preferences:
   flash_write_interval: never
 
+switch:
+  - platform: gpio
+    pin: P0.13
+    id: sensor_vcc_power
+    restore_mode: ALWAYS_OFF # на холодном старте — выключен, включаем только на момент замера
+
+# deep_sleep здесь НЕ перезагружает чип — это wakeable_delay() внутри того же процесса
+# (см. CLAUDE.md про радио-патч), поэтому on_boot сработал бы только один раз за физическое
+# включение. Нужен повторяющийся триггер — interval, как и у battery_voltage (update_interval),
+# который переживает фазу сна и "досрабатывает" в начале каждого активного окна.
+interval:
+  - interval: 20s # синхронизировано с текущим тестовым sleep_duration, поднять до 30min вместе с ним
+    then:
+      - switch.turn_on: sensor_vcc_power
+      - delay: 200ms # стабилизация ёмкостного датчика после подачи VCC
+      - component.update: flower_1
+      - component.update: flower_2
+      - component.update: flower_3
+      - component.update: flower_4
+      - delay: 100ms
+      - switch.turn_off: sensor_vcc_power
+
 deep_sleep:
   id: deep_sleep_control
   run_duration: 10s    # Даем 10 секунд на сопряжение/передачу данных в Zigbee
@@ -29,26 +52,73 @@ sensor:
     pin: P0.02
     name: "Влажность_почвы_1"
     icon: "mdi:water-percent"
-    update_interval: 20s
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    device_class: ""
+    update_interval: never # читается вручную из interval, после включения VCC через sensor_vcc_power
     id: flower_1
+    filters:
+      # Калибровка 2026-07-18, capacitive v1.2 на P0.02: сухой воздух ~2.19В (среднее по 3 циклам,
+      # 2.175-2.200), вода ~0.938В (среднее по 3 циклам, 0.936-0.939). Направление обратное —
+      # суше = выше напряжение, поэтому dry->0%, wet->100%.
+      - calibrate_linear:
+          - 2.19 -> 0.0
+          - 0.938 -> 100.0
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
   - platform: adc
     pin: P0.03
     name: "Влажность_почвы_2"
     icon: "mdi:water-percent"
-    update_interval: 20s
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    device_class: ""
+    update_interval: never # читается вручную из interval, после включения VCC через sensor_vcc_power
     id: flower_2
+    filters:
+      # Калибровка датчика 1 (2026-07-18) переиспользована как есть — тот же ёмкостный датчик,
+      # та же партия. Пересчитать под этот конкретный экземпляр отдельно, если разброс станет заметен.
+      - calibrate_linear:
+          - 2.19 -> 0.0
+          - 0.938 -> 100.0
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
   - platform: adc
     pin: P0.04
     name: "Влажность_почвы_3"
     icon: "mdi:water-percent"
-    update_interval: 20s
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    device_class: ""
+    update_interval: never # читается вручную из interval, после включения VCC через sensor_vcc_power
     id: flower_3
+    filters:
+      # Калибровка датчика 1 (2026-07-18) переиспользована как есть — см. комментарий у датчика 2.
+      - calibrate_linear:
+          - 2.19 -> 0.0
+          - 0.938 -> 100.0
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
   - platform: adc
     pin: P0.05
     name: "Влажность_почвы_4"
     icon: "mdi:water-percent"
-    update_interval: 20s
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    device_class: ""
+    update_interval: never # читается вручную из interval, после включения VCC через sensor_vcc_power
     id: flower_4
+    filters:
+      # Калибровка датчика 1 (2026-07-18) переиспользована как есть — см. комментарий у датчика 2.
+      - calibrate_linear:
+          - 2.19 -> 0.0
+          - 0.938 -> 100.0
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
   - platform: adc
     pin: P0.31
     name: "Батарея_напряжение"

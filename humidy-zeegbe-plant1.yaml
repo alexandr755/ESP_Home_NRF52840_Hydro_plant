@@ -2,10 +2,9 @@ esphome:
   name: "flower-monitor"
   friendly_name: "Flower Monitor"
 
-# Полностью отключаем USB-логирование, чтобы усыпить USB-контроллер чипа
+# ВРЕМЕННО включено для диагностики прошивки/значений батареи — вернуть level: NONE, baud_rate: 0 после
 logger:
-  level: NONE
-  baud_rate: 0
+  level: DEBUG
 
 nrf52:
   board: adafruit_itsybitsy_nrf52840
@@ -23,7 +22,7 @@ preferences:
 deep_sleep:
   id: deep_sleep_control
   run_duration: 10s    # Даем 10 секунд на сопряжение/передачу данных в Zigbee
-  sleep_duration: 30min # Сон на 30 минут — боевой интервал для теста rejoin/стабильности
+  sleep_duration: 20s # Временно короткий интервал — калибровка делителя батареи, вернуть на 30min после
 
 sensor:
   - platform: adc
@@ -58,8 +57,10 @@ sensor:
     update_interval: 20s
     id: battery_voltage
     filters:
-      # raw = (Vbat/2) / Vref, divider 470k+470k, Vref assumed 3.6V (nRF52 SAADC default gain 1/6) — не подтверждено, откалибровать по мультиметру после прошивки
-      - multiply: 7.2
+      # ESPHome ADC raw value on nRF52/Zephyr is already the pin voltage, not a 0-1 Vref ratio
+      # (the earlier Vref/gain-based 7.2 guess was wrong). Calibrated 2026-07-18 by multimeter:
+      # V_actual=3.95V at BATTERY+, V_pin=1.89V at the divider midpoint -> 3.95/1.89 = 2.09
+      - multiply: 2.09
   - platform: template
     name: "Батарея_процент"
     icon: "mdi:battery-percent"

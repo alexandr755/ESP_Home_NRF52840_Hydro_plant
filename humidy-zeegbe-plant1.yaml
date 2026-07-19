@@ -2,10 +2,10 @@ esphome:
   name: "flower-monitor"
   friendly_name: "Flower Monitor"
 
-# ВРЕМЕННО включено для диагностики — вернуть level: NONE, baud_rate: 0 после.
-# Понижено обратно с VERBOSE (было нужно только чтобы разово подтвердить switch Turning ON/OFF).
+# Полностью отключаем USB-логирование, чтобы усыпить USB-контроллер чипа
 logger:
-  level: DEBUG
+  level: NONE
+  baud_rate: 0
 
 nrf52:
   board: adafruit_itsybitsy_nrf52840
@@ -31,7 +31,7 @@ switch:
 # включение. Нужен повторяющийся триггер — interval, как и у battery_voltage (update_interval),
 # который переживает фазу сна и "досрабатывает" в начале каждого активного окна.
 interval:
-  - interval: 20s # синхронизировано с текущим тестовым sleep_duration, поднять до 30min вместе с ним
+  - interval: 30min # синхронизировано с боевым sleep_duration
     then:
       - switch.turn_on: sensor_vcc_power
       - delay: 200ms # стабилизация ёмкостного датчика после подачи VCC
@@ -45,7 +45,7 @@ interval:
 deep_sleep:
   id: deep_sleep_control
   run_duration: 10s    # Даем 10 секунд на сопряжение/передачу данных в Zigbee
-  sleep_duration: 20s # Временно короткий интервал — калибровка делителя батареи, вернуть на 30min после
+  sleep_duration: 30min
 
 sensor:
   - platform: adc
@@ -124,7 +124,10 @@ sensor:
     name: "Батарея_напряжение"
     icon: "mdi:battery"
     unit_of_measurement: "V"
-    update_interval: 20s
+    # deep_sleep блокирует процесс целиком на sleep_duration (см. комментарий у interval выше) —
+    # любое значение update_interval <= sleep_duration ведёт себя одинаково (обновление раз за
+    # цикл, "просроченное" к моменту пробуждения), поэтому ставим тот же 30min для ясности.
+    update_interval: 30min
     id: battery_voltage
     filters:
       # ESPHome ADC raw value on nRF52/Zephyr is already the pin voltage, not a 0-1 Vref ratio
@@ -135,7 +138,10 @@ sensor:
     name: "Батарея_процент"
     icon: "mdi:battery-percent"
     unit_of_measurement: "%"
-    update_interval: 20s
+    # deep_sleep блокирует процесс целиком на sleep_duration (см. комментарий у interval выше) —
+    # любое значение update_interval <= sleep_duration ведёт себя одинаково (обновление раз за
+    # цикл, "просроченное" к моменту пробуждения), поэтому ставим тот же 30min для ясности.
+    update_interval: 30min
     id: battery_percent
     lambda: |-
       float v = id(battery_voltage).state;

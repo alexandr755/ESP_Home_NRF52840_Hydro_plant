@@ -1,8 +1,23 @@
-from zigpy.quirks.v2 import QuirkBuilder, SensorDeviceClass, SensorStateClass
+from zigpy.quirks.v2 import (
+    QuirkBuilder,
+    ReportingConfig,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from zigpy.zcl.clusters.general import AnalogInput
 
 MANUFACTURER = "esphome"
 MODEL = "flower-monitor"
+
+# Критично для энергопотребления (найдено 2026-07-19): ZHA'шный дефолтный Configure Reporting
+# (установленный на устройство при Reconfigure Device) заставляет ZBOSS самостоятельно слать
+# периодические репорты по таймеру. Таймер срабатывает посреди окна deep_sleep, будит радио,
+# и из-за rx_on_when_idle=true оно остаётся в приёме до конца окна (~9.6мА вместо ~14мкА).
+# max_interval=0 по ZCL-спецификации = "периодических репортов нет, только по изменению" —
+# а изменения атрибутов происходят только когда ESPHome пишет их в активном окне (и сам
+# форсирует отправку), так что репорты по построению не попадают в окно сна.
+# min_interval=0 — слать сразу; reportable_change=0 — любое изменение значимо.
+ON_CHANGE_ONLY = ReportingConfig(min_interval=0, max_interval=0, reportable_change=0)
 
 (
     QuirkBuilder(MANUFACTURER, MODEL)
@@ -21,6 +36,7 @@ MODEL = "flower-monitor"
         suggested_display_precision=0,
         translation_key="soil_moisture_1",
         fallback_name="Soil moisture 1",
+        reporting_config=ON_CHANGE_ONLY,
     )
     .sensor(
         "present_value",
@@ -34,6 +50,7 @@ MODEL = "flower-monitor"
         suggested_display_precision=0,
         translation_key="soil_moisture_2",
         fallback_name="Soil moisture 2",
+        reporting_config=ON_CHANGE_ONLY,
     )
     .sensor(
         "present_value",
@@ -47,6 +64,7 @@ MODEL = "flower-monitor"
         suggested_display_precision=0,
         translation_key="soil_moisture_3",
         fallback_name="Soil moisture 3",
+        reporting_config=ON_CHANGE_ONLY,
     )
     .sensor(
         "present_value",
@@ -60,6 +78,7 @@ MODEL = "flower-monitor"
         suggested_display_precision=0,
         translation_key="soil_moisture_4",
         fallback_name="Soil moisture 4",
+        reporting_config=ON_CHANGE_ONLY,
     )
     .sensor(
         # ESPHome already applies the divider-ratio multiply filter before sending,
@@ -75,6 +94,7 @@ MODEL = "flower-monitor"
         suggested_display_precision=2,
         translation_key="battery_voltage",
         fallback_name="Battery voltage",
+        reporting_config=ON_CHANGE_ONLY,
     )
     .sensor(
         # ESPHome's template sensor lambda already outputs 0-100, sent as-is.
@@ -89,6 +109,7 @@ MODEL = "flower-monitor"
         suggested_display_precision=0,
         translation_key="battery_percent",
         fallback_name="Battery percent",
+        reporting_config=ON_CHANGE_ONLY,
     )
     .add_to_registry()
 )

@@ -176,6 +176,8 @@ A fresh device on ZHA shows generic sensor entities named `__1`..`__4` (raw ADC 
 
 **Extended 2026-07-18** with 2 more `.sensor()` calls for the battery sensors added to the yaml: endpoint 5 = `battery_voltage` (`multiplier=1`, `unit="V"`, `device_class=VOLTAGE` — ESPHome already sends the post-filter, already-in-volts value, no quirk-side scaling needed), endpoint 6 = `battery_percent` (`multiplier=1`, `unit="%"`, `device_class=BATTERY`). See "Battery Voltage Calibration" further down for the calibration work. **Also updated same day**: endpoints 1-4 (soil moisture) switched from `multiplier=100` (raw 0-1 ratio) to `multiplier=1`, since ESPHome now applies `calibrate_linear` itself and sends an already-0-100 value — see "Soil Moisture Sensor Wiring & Calibration" further down.
 
+**Critical addition 2026-07-19: every `.sensor()` call carries `reporting_config=ON_CHANGE_ONLY`** (`ReportingConfig(min_interval=0, max_interval=0, reportable_change=0)`). This is a power fix, not cosmetics — without it, ZHA's Reconfigure Device installs default *periodic* reporting whose ZBOSS timers wake the radio mid-deep-sleep and pin it at ~9.6mA. See "Sleep-Current Regression" further down. **If the device is ever re-interviewed/reconfigured with an older quirk (or the quirk fails to load), sleep current will silently regress to ~9.6mA.**
+
 **Gotcha confirmed again 2026-07-18: adding new endpoints to an already-paired device doesn't surface new entities just from restarting HA.** A full HA restart reloads the quirk code, but ZHA still needs to actually discover the new endpoints/clusters on the device, which only happens on interview. Try **ZHA device page → Reconfigure Device** first (worked without needing to drop pairing) before resorting to the heavier remove+re-pair flow described under "Rejoining a different network" above.
 
 **Deployment:**
@@ -312,14 +314,9 @@ Physical divider soldered: `BATTERY+` → 470k → node (→ `P0.31`) → 470k �
 
 **Gotcha confirmed again: new Zigbee endpoints on an already-paired device need a fresh discovery.** After adding the `battery_voltage`/`battery_percent` sensors (new endpoints 5/6) and restarting HA (which loads the updated quirk), the new entities did not appear — same root cause as the earlier 4-sensor endpoint changes (see "ZHA Second Coordinator" above). Fix: ZHA device page → **Reconfigure Device** (lighter than remove+re-pair, worked this time without dropping the existing pairing).
 
-**RESOLVED: the "battery entities update far less often than soil moisture" mystery above was a false lead — it was the UF2-reflash-silently-fails gotcha the whole time.** Once a build was verified to actually be running (via debug log, per the gotcha above), battery endpoints 5/6 updated every single wake cycle without exception, same as everything else. The `reportable_change`/ZCL-reporting-threshold hypothesis was never needed and nothing was changed in the quirk to address it — no `reporting_config` parameter was ever added. If this symptom resurfaces, re-check the reflash first before re-opening this investigation.
+**RESOLVED: the "battery entities update far less often than soil moisture" mystery above was a false lead — it was the UF2-reflash-silently-fails gotcha the whole time.** Once a build was verified to actually be running (via debug log, per the gotcha above), battery endpoints 5/6 updated every single wake cycle without exception, same as everything else. The `reportable_change`/ZCL-reporting-threshold hypothesis was never needed for *this* symptom. (Update 2026-07-19: a `reporting_config` parameter **was** later added to the quirk after all — but for the opposite reason, to *disable periodic reporting* for power savings; see "Sleep-Current Regression" below. Unrelated to this false lead.)
 
-**Current yaml is in a temporary diagnostic state, not production — do not assume the defaults below are what's deployed:**
-- `logger: level: DEBUG` (should be `level: NONE` / `baud_rate: 0` for production — see "Power Consumption" above, this alone costs meaningful battery current)
-- `deep_sleep: sleep_duration: 20s` (should be `30min` for production)
-- `interval: - interval: 20s` (the soil-moisture read cycle, see below — must track `sleep_duration` if it changes)
-
-Left in this state intentionally through the 2026-07-18 sensor-wiring work below (fast cycles make iterating on physical wiring much less tedious) — **revert all three together before any real deployment.**
+**Yaml state: back to production as of 2026-07-19** (`logger: NONE`/`baud_rate: 0`, `sleep_duration`/`interval`/battery `update_interval` all `30min`) after the sensor bring-up and the sleep-current regression work below were completed.
 
 ---
 
@@ -344,9 +341,37 @@ Filter: `calibrate_linear: [2.19 -> 0.0, 0.938 -> 100.0]` then `clamp: min_value
 
 ---
 
-## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09; requires the `deep_sleep_zephyr.cpp` radio-sleep patch above to actually reach µA-range sleep — a stock ESPHome install will only get the 7mA floor with this same yaml)
+## Sleep-Current Regression: ZHA's default periodic reporting kept the radio awake (found & fixed 2026-07-19)
 
-**Note (2026-07-18): the snippet below is the intended production shape, not the exact current yaml** — see "Battery Voltage Calibration" above for the current diagnostic deviations (`logger: DEBUG`, `sleep_duration: 20s`) and the corrected `multiply: 2.09`.
+**Symptom:** the production build (30min sleep, logger NONE) held a steady **~9.6mA** on the battery ammeter instead of the expected ~14µA sleep plateau — only occasionally (not every battery connect) dipping to µA. Yet the fd9989e-era soak test at the same 30min had been confirmed at 14µA.
+
+**Bisect matrix (all measured battery-only, USB disconnected):**
+| Cycle | Logger | Sleep current |
+|---|---|---|
+| 20s | DEBUG | ✅ µA |
+| 20s | NONE | ✅ 7.4µA |
+| 30s | NONE | ❌ 9.68mA |
+| 30min | NONE | ❌ 9.6mA |
+
+Exonerated along the way (in order): the `interval:` component (removed entirely in an A/B build — still 9.68mA; architecturally it's the same `PollingComponent` as any `update_interval`, and nothing calls `deep_sleep.prevent`), the `switch:` component (present in every passing 20s test), the logger (20s+NONE slept fine), and the venv radio-sleep patch itself (verified still present). The razor-sharp 20s-works/30s-fails boundary pointed at something *periodic* inside the stack.
+
+**Root cause:** the **ZHA "Reconfigure Device" run on 2026-07-18** (needed to discover the new battery endpoints 5/6) installed ZHA's *default* ZCL attribute-reporting configs (periodic min/max intervals) onto all AnalogInput clusters. ESPHome's build wraps `zb_zcl_put_reporting_info_from_req` but the wrap is **logging-only** — it calls `__real_...` first, so coordinator-pushed reporting configs are genuinely stored and honored by ZBOSS. ZBOSS's autonomous report timers then fire *mid-sleep-window*, power the radio for TX — and because the device runs with **`RX ON when idle: YES`** (it originally joined with `sleepy: false` and never re-joined after the flag flip, so at MAC level it was never actually a sleepy end device — visible in every `[C][zigbee]` dump), the radio stays in RX for the rest of the window. ~9.6mA ≈ radio RX current.
+
+Two things this explains retroactively:
+- **Why fd9989e worked at 14µA:** with `rx_on_when_idle=true` ZBOSS has *no* polling obligations (it assumes the radio always listens), and back then no coordinator-pushed reporting configs existed — so once the patch forced the radio off, ZBOSS simply had nothing scheduled and never turned it back on.
+- **Why 20s cycles kept "working" during diagnosis:** 20s sleep + 10s run = 30s period, which phase-locked with the ~30s reporting timer — reports always landed inside the awake window. Any other cycle length drifted the timer into the sleep window.
+
+**Fix (quirk-side, no firmware change):** `zha-quirks/esphome_flower_monitor.py` now passes `reporting_config=ReportingConfig(min_interval=0, max_interval=0, reportable_change=0)` (`ON_CHANGE_ONLY`) on all 6 `.sensor()` calls. Per ZCL spec, `max_interval=0` = **no periodic reporting, change-based only** — and attribute changes only ever happen when ESPHome writes them during the awake window (and ESPHome force-kicks the report send itself: `Force zboss scheduler to wake and send attribute report`). So by construction no report timer can fire mid-sleep. Deploy = copy quirk → full HA restart → **Reconfigure Device** (retry if it hits a sleep window; it replaces the stored reporting configs in ZBOSS).
+
+**Verified at 30s cycle after the fix:** sleeps at µA. One benign residual: for the **first ~5 minutes after battery connect** sleep is choppy (1s µA dips bouncing back to ~9.8mA) — that's ZHA reacting to the device-announce (delivering queued reads etc.), each delivery waking `wakeable_delay` early and buying another 10s run window; it drains/gives up within ~5min and the cycle then runs clean. One-time cost ≈ 0.8mAh — ignore it, and **don't measure sleep current during the first 5-10 min after power-on**. 30min production measurement was in progress as of this writing — if it regressed, re-check (in order): the venv patch (volatile!), whether a ZHA Reconfigure/re-interview re-installed default reporting configs (that would re-break it exactly this way), then the bisect matrix above.
+
+`run_duration: 10s` was deliberately kept (evaluated raising it): the 10s window demonstrably fits all Zigbee chores (clean 30s-cycle sleeps, fd9989e soak test), and average current scales almost linearly with run duration (10s → ~63µA avg; 20s → ~118µA). Revisit only if HA shows missed 30min report cycles — then bump to 15s.
+
+---
+
+## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09; requires the `deep_sleep_zephyr.cpp` radio-sleep patch above to actually reach µA-range sleep — a stock ESPHome install will only get the 7mA floor with this same yaml; **and** the quirk-side `ON_CHANGE_ONLY` reporting config above, or ZHA-pushed periodic reporting will hold the radio at ~9.6mA through the sleep window)
+
+**Note (2026-07-18): the snippet below is the intended production shape** — the live yaml matches it again as of 2026-07-19 (with the corrected `multiply: 2.09`, the `switch:`/`interval:` blocks, and calibration filters — see the sections above; the snippet is not updated line-for-line, the yaml file itself is the source of truth).
 
 ```yaml
 esphome:

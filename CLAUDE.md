@@ -302,6 +302,8 @@ User's cell: **2500mAh 18650**. Runtime:
 
 Charge time at the `BOOST`-bridged 300mA rate (appropriate since 2500mAh > the seller's 500mAh bridging threshold): 2500mAh / 300mA ≈ 8.3h raw CC-phase, ~9-10h realistic total with the CV taper — fits an overnight charge.
 
+**Stale as of the µA radio-sleep fix (2026-07-09 patch) and the 15min production interval (2026-07-21) — kept for historical context only.** With confirmed 7.4µA sleep + ~10s active at production `sleep_duration: 15min`: weighted average ≈ (10s×8mA + 890s×0.0074mA)/900 ≈ **96µA**, i.e. 2500mAh/0.096mA ≈ 26000h ≈ **~3 years** raw, comfortably years even at 80% conservative capacity. Battery life is no longer the binding constraint on sampling frequency — 15min was chosen (2026-07-21) based on how fast soil moisture actually changes (hours-scale, not minutes), not power budget.
+
 ## Battery Voltage Calibration (2026-07-18)
 
 Physical divider soldered: `BATTERY+` → 470k → node (→ `P0.31`) → 470k → `GND`.
@@ -363,7 +365,9 @@ Two things this explains retroactively:
 
 **Fix (quirk-side, no firmware change):** `zha-quirks/esphome_flower_monitor.py` now passes `reporting_config=ReportingConfig(min_interval=0, max_interval=0, reportable_change=0)` (`ON_CHANGE_ONLY`) on all 6 `.sensor()` calls. Per ZCL spec, `max_interval=0` = **no periodic reporting, change-based only** — and attribute changes only ever happen when ESPHome writes them during the awake window (and ESPHome force-kicks the report send itself: `Force zboss scheduler to wake and send attribute report`). So by construction no report timer can fire mid-sleep. Deploy = copy quirk → full HA restart → **Reconfigure Device** (retry if it hits a sleep window; it replaces the stored reporting configs in ZBOSS).
 
-**Verified at 30s cycle after the fix:** sleeps at µA. One benign residual: for the **first ~5 minutes after battery connect** sleep is choppy (1s µA dips bouncing back to ~9.8mA) — that's ZHA reacting to the device-announce (delivering queued reads etc.), each delivery waking `wakeable_delay` early and buying another 10s run window; it drains/gives up within ~5min and the cycle then runs clean. One-time cost ≈ 0.8mAh — ignore it, and **don't measure sleep current during the first 5-10 min after power-on**. 30min production measurement was in progress as of this writing — if it regressed, re-check (in order): the venv patch (volatile!), whether a ZHA Reconfigure/re-interview re-installed default reporting configs (that would re-break it exactly this way), then the bisect matrix above.
+**Verified at 30s cycle after the fix:** sleeps at µA. One benign residual: for the **first ~5 minutes after battery connect** sleep is choppy (1s µA dips bouncing back to ~9.8mA) — that's ZHA reacting to the device-announce (delivering queued reads etc.), each delivery waking `wakeable_delay` early and buying another 10s run window; it drains/gives up within ~5min and the cycle then runs clean. One-time cost ≈ 0.8mAh — ignore it, and **don't measure sleep current during the first 5-10 min after power-on**.
+
+**Confirmed at production interval, twice (2026-07-21):** re-verified with a dedicated 20s-cycle diagnostic build first (settled after ~3min of announce noise, then flat **7.4µA** — matches the earlier bisect-table baseline exactly, confirming the venv patch and quirk both survived untouched since 2026-07-19). Then **production interval itself was changed from 30min to 15min** (soil moisture changes on an hours timescale, not minutes — 15min gives finer resolution on watering events essentially for free now that sleep is µA-range instead of mA-range, see battery math below) and reflashed. Same result: settled after ~3min, flat **7.4µA** on the real 15min cycle. The fix holds at production settings, not just short diagnostic cycles.
 
 `run_duration: 10s` was deliberately kept (evaluated raising it): the 10s window demonstrably fits all Zigbee chores (clean 30s-cycle sleeps, fd9989e soak test), and average current scales almost linearly with run duration (10s → ~63µA avg; 20s → ~118µA). Revisit only if HA shows missed 30min report cycles — then bump to 15s.
 
@@ -371,7 +375,7 @@ Two things this explains retroactively:
 
 ## Current Working Config (4 sensors + battery + deep_sleep, confirmed compiling 2026-07-09; requires the `deep_sleep_zephyr.cpp` radio-sleep patch above to actually reach µA-range sleep — a stock ESPHome install will only get the 7mA floor with this same yaml; **and** the quirk-side `ON_CHANGE_ONLY` reporting config above, or ZHA-pushed periodic reporting will hold the radio at ~9.6mA through the sleep window)
 
-**Note (2026-07-18): the snippet below is the intended production shape** — the live yaml matches it again as of 2026-07-19 (with the corrected `multiply: 2.09`, the `switch:`/`interval:` blocks, and calibration filters — see the sections above; the snippet is not updated line-for-line, the yaml file itself is the source of truth).
+**Note (2026-07-18): the snippet below is the intended production shape** — the live yaml matches it again as of 2026-07-19 (with the corrected `multiply: 2.09`, the `switch:`/`interval:` blocks, and calibration filters — see the sections above; the snippet is not updated line-for-line, the yaml file itself is the source of truth). **Updated 2026-07-21: production `sleep_duration` (and matching `interval:`/battery `update_interval`) changed from `30min` to `15min`** — confirmed still holding µA sleep at the new interval, see "Sleep-Current Regression" above.
 
 ```yaml
 esphome:
@@ -399,7 +403,7 @@ preferences:
 deep_sleep:
   id: deep_sleep_control
   run_duration: 10s
-  sleep_duration: 30min
+  sleep_duration: 15min
 
 sensor:
   - platform: adc

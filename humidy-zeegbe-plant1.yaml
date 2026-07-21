@@ -32,7 +32,7 @@ switch:
 # который переживает фазу сна и "досрабатывает" в начале каждого активного окна.
 # A/B тест 2026-07-19: без interval ток так же держался 9.68мА — interval НЕ виновен в отсутствии сна.
 interval:
-  - interval: 30min # синхронизировано с боевым sleep_duration
+  - interval: 15min # синхронизировано с боевым sleep_duration
     then:
       - switch.turn_on: sensor_vcc_power
       - delay: 200ms # стабилизация ёмкостного датчика после подачи VCC
@@ -46,7 +46,7 @@ interval:
 deep_sleep:
   id: deep_sleep_control
   run_duration: 10s    # Даем 10 секунд на сопряжение/передачу данных в Zigbee
-  sleep_duration: 30min
+  sleep_duration: 15min
 
 sensor:
   - platform: adc
@@ -128,7 +128,7 @@ sensor:
     # deep_sleep блокирует процесс целиком на sleep_duration (см. комментарий у interval выше) —
     # любое значение update_interval <= sleep_duration ведёт себя одинаково (обновление раз за
     # цикл, "просроченное" к моменту пробуждения), поэтому ставим тот же 30min для ясности.
-    update_interval: 30min
+    update_interval: 15min # синхронизировано с боевым sleep_duration
     id: battery_voltage
     filters:
       # ESPHome ADC raw value on nRF52/Zephyr is already the pin voltage, not a 0-1 Vref ratio
@@ -142,7 +142,7 @@ sensor:
     # deep_sleep блокирует процесс целиком на sleep_duration (см. комментарий у interval выше) —
     # любое значение update_interval <= sleep_duration ведёт себя одинаково (обновление раз за
     # цикл, "просроченное" к моменту пробуждения), поэтому ставим тот же 30min для ясности.
-    update_interval: 30min
+    update_interval: 15min # синхронизировано с боевым sleep_duration
     id: battery_percent
     lambda: |-
       float v = id(battery_voltage).state;
